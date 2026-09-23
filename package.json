@@ -2,7 +2,8 @@
   "name": "learn-ml",
   "version": "0.1.0",
   "private": true,
-  "description": "Interactive machine learning sandbox and leveled tutorial in the spirit of learnGitBranching, built around the scikit-learn mental model.",
+  "description": "Interactive machine learning sandbox and leveled tutorial built around the scikit-learn mental model.",
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

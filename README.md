@@ -1,7 +1,6 @@
 # LearnML
 
-Interactive machine learning sandbox and leveled tutorial in the spirit of
-[learnGitBranching](https://github.com/pcottle/learnGitBranching).
+Interactive machine learning sandbox and leveled curriculum.
 
 **Live:** https://alisadeghiaghili.github.io/learn-ml/
 
@@ -98,4 +97,4 @@ is a deliberate later step, not a silent claim in the UI.
 
 ## License
 
-MIT
+Apache License 2.0

@@ -1,20 +1,17 @@
 # LearnML — Product & Design Spec
 
-Interactive ML sandbox and leveled tutorial in the spirit of
-[learnGitBranching](https://github.com/pcottle/learnGitBranching).
+Interactive ML sandbox and leveled tutorial.
 Curriculum and API vocabulary follow scikit-learn. The product teaches
 **concepts first**, then the estimator code that expresses them.
 
 ## Product thesis
 
-learnGitBranching wins because Git is invisible on a commit graph and a
-terminal. Machine learning has the same problem: `fit` is a black box, data
-leakage is silent, and train/test mistakes look like good scores. LearnML makes
-those states visible and challengeable.
+ML is invisible until you see overfitting, leakage, and metric lies as shapes.
+LearnML makes those states visible and challengeable.
 
 Three modes, same shell:
 
-1. **Sandbox** — free command play, like LGB sandbox.
+1. **Sandbox** — free command play.
 2. **Levels** — short challenges with a win condition and a concept brief.
 3. **Concept labs** — parameter playgrounds (bias-variance, threshold, scale)
    where the lesson is watching a surface change.
