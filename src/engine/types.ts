@@ -85,8 +85,18 @@ export interface WinResult {
 export interface ConceptBrief {
   readonly title: string;
   readonly body: string;
+  readonly whatHappens: string;
+  readonly why: string;
   readonly formula?: string;
   readonly callout?: string;
+}
+
+export interface GoalStep {
+  readonly id: string;
+  readonly label: string;
+  readonly detail: string;
+  readonly command?: string;
+  readonly check: (state: SessionSnapshot) => boolean;
 }
 
 export interface Level {
@@ -97,6 +107,8 @@ export interface Level {
   readonly concept: ConceptBrief;
   readonly goal: string;
   readonly hints: readonly string[];
+  readonly learning: readonly string[];
+  readonly steps: readonly GoalStep[];
   readonly seedDataset?: DatasetName;
   readonly win: (state: SessionSnapshot) => WinResult;
 }

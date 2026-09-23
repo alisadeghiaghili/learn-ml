@@ -1,5 +1,6 @@
 /**
- * LearnML shell: chrome, level rail, concept brief, stage, command dock.
+ * LearnML shell: chrome, level rail, concept brief, stage, command dock,
+ * goal checklist with current-step neon, and level-complete celebration.
  */
 
 import "./styles/app.css";
@@ -19,77 +20,32 @@ import {
 } from "./engine";
 import { ALL_LEVELS, findLevel } from "./levels";
 import { drawStage, type DrawState } from "./ui/charts";
+import { TerminalView, type LogLine } from "./ui/terminal";
+import { escapeHtml, renderMarkdown, showModal } from "./ui/dialog";
+import { launchConfetti, playFanfare } from "./ui/confetti";
+import {
+  buildShareTargets,
+  shareWithClipboard,
+  COFFEE_BUTTON_HTML,
+  REPO_URL,
+  LIVE_URL,
+} from "./ui/share";
+import {
+  loadProgress,
+  saveProgress,
+  summarizeCurriculum,
+  resumeLine,
+  type LevelProgress,
+} from "./ui/progress";
 
 type Mode = "level" | "sandbox";
 
-const SOLVED_KEY = "learnml.solved.v1";
-
-function loadSolved(): Set<string> {
-  try {
-    const raw = localStorage.getItem(SOLVED_KEY);
-    if (!raw) {
-      return new Set();
-    }
-    return new Set(JSON.parse(raw) as string[]);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveSolved(ids: Set<string>): void {
-  localStorage.setItem(SOLVED_KEY, JSON.stringify([...ids]));
-}
-
-interface AppView {
-  mode: Mode;
-  levelId: string;
-  session: Session;
-  solved: Set<string>;
-  fitProgress: number;
-  liveModel: FittedModel | null;
-  lastLines: { kind: "cmd" | "out" | "err" | "sk"; text: string }[];
-  winFeedback: string | null;
-  winOk: boolean;
-}
-
-function h<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  props: Record<string, string> = {},
-  ...children: (Node | string)[]
-): HTMLElementTagNameMap[K] {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props)) {
-    if (k === "class") {
-      el.className = v;
-    } else if (k === "text") {
-      el.textContent = v;
-    } else {
-      el.setAttribute(k, v);
-    }
-  }
-  for (const c of children) {
-    el.append(c);
-  }
-  return el;
-}
-
-function currentLevel(view: AppView): Level | null {
-  return findLevel(view.levelId) ?? null;
-}
-
-function maybeWin(view: AppView, result: CommandResult): void {
-  const level = currentLevel(view);
-  if (!level || view.mode !== "level") {
-    return;
-  }
-  const wr = level.win(result.snapshot);
-  view.winFeedback = wr.feedback;
-  view.winOk = wr.won;
-  if (wr.won) {
-    view.solved.add(level.id);
-    saveSolved(view.solved);
-  }
-}
+const CHEERS = [
+  "Locked in. That concept is yours now.",
+  "Clean win. The pipeline told the truth.",
+  "Good — you measured the future, not the homework.",
+  "Nice. That is production hygiene, not notebook luck.",
+];
 
 function rebuildModel(snap: SessionSnapshot): FittedModel | null {
   if (!snap.fitted || !snap.model || !snap.split || !snap.dataset) {
@@ -108,89 +64,92 @@ function rebuildModel(snap: SessionSnapshot): FittedModel | null {
   }
 }
 
-export function mount(root: HTMLElement): void {
-  const view: AppView = {
-    mode: "level",
-    levelId: ALL_LEVELS[0]?.id ?? "1.1",
-    session: new Session(),
-    solved: loadSolved(),
-    fitProgress: 0,
-    liveModel: null,
-    lastLines: [],
-    winFeedback: null,
-    winOk: false,
-  };
+function nextLevel(id: string): Level | undefined {
+  const idx = ALL_LEVELS.findIndex((l) => l.id === id);
+  return idx >= 0 ? ALL_LEVELS[idx + 1] : undefined;
+}
 
-  const seed = () => currentLevel(view)?.seedDataset;
-  if (seed()) {
-    const r = view.session.load(seed()!);
-    view.lastLines.push(...r.lines.map((text) => ({ kind: "out" as const, text })));
+export function mount(root: HTMLElement): void {
+  const progress: Record<string, LevelProgress> = loadProgress();
+  let mode: Mode = "level";
+  let levelId = ALL_LEVELS[0]?.id ?? "1.1";
+  let session = new Session();
+  let liveModel: FittedModel | null = null;
+  let fitProgress = 0;
+  let winFeedback: string | null = null;
+  let winOk = false;
+  let celebratedFor = "";
+  let lastCmdCount = 0;
+
+  function currentLevel(): Level | null {
+    return findLevel(levelId) ?? null;
   }
 
-  const elChrome = h("header", { class: "chrome" });
-  const elBrand = h("div", { class: "brand" }, "Learn", h("span", {}, "ML"));
-  const elNav = h("nav", { class: "chrome-nav" });
-  const btnLevels = h("button", { type: "button", class: "is-active", text: "levels" });
-  const btnSandbox = h("button", { type: "button", text: "sandbox" });
-  const btnHelp = h("button", { type: "button", text: "help" });
-  elNav.append(btnLevels, btnSandbox, btnHelp);
-  const elMeta = h("div", { class: "chrome-meta", text: "scikit-learn mental model" });
-  elChrome.append(elBrand, elNav, elMeta);
+  function persistProgress(id: string, cmds: number): void {
+    const prev = progress[id] ?? { solved: false };
+    progress[id] = {
+      solved: true,
+      bestCommands:
+        prev.bestCommands === undefined ? cmds : Math.min(prev.bestCommands, cmds),
+      solvedAt: prev.solvedAt ?? new Date().toISOString(),
+    };
+    saveProgress(progress);
+  }
 
-  const elBody = h("div", { class: "body" });
-  const elRail = h("aside", { class: "rail" });
-  const elMain = h("div", { class: "main" });
-  const elBrief = h("section", { class: "brief" });
-  const elStage = h("section", { class: "stage" });
-  const elViz = h("div", { class: "stage-viz" });
+  const elChrome = document.createElement("header");
+  elChrome.className = "chrome";
+  elChrome.innerHTML = `
+    <div class="brand">Learn<span>ML</span></div>
+    <nav class="chrome-nav">
+      <button type="button" data-nav="levels" class="is-active">levels</button>
+      <button type="button" data-nav="sandbox">sandbox</button>
+      <button type="button" data-nav="help">help</button>
+    </nav>
+    <div class="chrome-meta">scikit-learn mental model · progress in cookie</div>
+  `;
+
+  const elBody = document.createElement("div");
+  elBody.className = "body";
+  const elRail = document.createElement("aside");
+  elRail.className = "rail";
+  const elMain = document.createElement("div");
+  elMain.className = "main";
+  const elBrief = document.createElement("section");
+  elBrief.className = "brief";
+  const elStage = document.createElement("section");
+  elStage.className = "stage";
+  const elViz = document.createElement("div");
+  elViz.className = "stage-viz";
   const canvas = document.createElement("canvas");
   elViz.append(canvas);
-  const elSide = h("div", { class: "stage-side" });
+  const elSide = document.createElement("div");
+  elSide.className = "stage-side";
   elStage.append(elViz, elSide);
   elMain.append(elBrief, elStage);
   elBody.append(elRail, elMain);
 
-  const elDock = h("footer", { class: "dock" });
-  const elLog = h("div", { class: "dock-log" });
-  const elInputRow = h("div", { class: "dock-input-row" });
-  const elPrompt = h("span", { class: "dock-prompt", text: "$" });
-  const input = h("input", {
-    class: "dock-input",
-    type: "text",
-    spellcheck: "false",
-    autocomplete: "off",
-    placeholder: "load blobs",
-    "aria-label": "command",
-  }) as HTMLInputElement;
-  elInputRow.append(elPrompt, input);
-  const elSk = h("div", { class: "dock-sklearn" });
-  elDock.append(elLog, elInputRow, elSk);
+  const elDock = document.createElement("footer");
+  elDock.className = "dock";
+  const termRoot = document.createElement("div");
+  termRoot.className = "term-root";
+  const elSk = document.createElement("div");
+  elSk.className = "dock-sklearn";
+  elDock.append(termRoot, elSk);
 
   root.append(elChrome, elBody, elDock);
 
+  const terminal = new TerminalView(termRoot, (cmd) => runCommand(cmd));
+
   function setSklearn(text: string | null): void {
-    elSk.replaceChildren();
-    if (!text) {
-      elSk.append(h("span", { class: "lbl", text: "scikit-learn · " }), "ready");
-      return;
-    }
-    elSk.append(h("span", { class: "lbl", text: "scikit-learn · " }), text);
+    elSk.innerHTML = text
+      ? `<span class="lbl">scikit-learn · </span>${escapeHtml(text)}`
+      : `<span class="lbl">scikit-learn · </span>ready`;
   }
 
-  function renderLog(): void {
-    elLog.replaceChildren();
-    for (const line of view.lastLines.slice(-80)) {
-      const cls =
-        line.kind === "cmd"
-          ? "line-cmd"
-          : line.kind === "err"
-            ? "line-err"
-            : line.kind === "sk"
-              ? "line-sk"
-              : "line-out";
-      elLog.append(h("div", { class: cls, text: line.text }));
+  function pushLines(kind: LogLine["kind"], texts: string[]): void {
+    for (const text of texts) {
+      terminal.push(kind, text);
     }
-    elLog.scrollTop = elLog.scrollHeight;
   }
 
   function renderRail(): void {
@@ -208,103 +167,79 @@ export function mount(root: HTMLElement): void {
           : world === "w2"
             ? "WORLD 2 · METRICS LIE"
             : world.toUpperCase();
-      elRail.append(h("div", { class: "rail-world", text: label }));
+      const head = document.createElement("div");
+      head.className = "rail-world";
+      head.textContent = label;
+      elRail.append(head);
       for (const lv of levels) {
-        const solved = view.solved.has(lv.id);
-        const active = view.mode === "level" && view.levelId === lv.id;
-        const btn = h(
-          "button",
-          {
-            type: "button",
-            class: `level-btn${solved ? " is-solved" : ""}${active ? " is-active" : ""}`,
-          },
-          h("span", { class: "id", text: lv.id }),
-          h("span", { class: "title", text: lv.title }),
-          h("span", { class: "mark", text: solved ? "✓" : "" }),
-        );
+        const solved = Boolean(progress[lv.id]?.solved);
+        const active = mode === "level" && levelId === lv.id;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `level-btn${solved ? " is-solved" : ""}${active ? " is-active" : ""}`;
+        btn.innerHTML = `<span class="id">${escapeHtml(lv.id)}</span><span class="title">${escapeHtml(lv.title)}</span><span class="mark">${solved ? "✓" : ""}</span>`;
         btn.addEventListener("click", () => openLevel(lv.id));
         elRail.append(btn);
       }
     }
   }
 
-  function renderBrief(): void {
-    elBrief.replaceChildren();
-    if (view.mode === "sandbox") {
-      elBrief.append(
-        h("div", { class: "brief-kicker", text: "SANDBOX" }),
-        h("h1", { text: "Mess with the pipeline" }),
-        h("p", {
-          class: "brief-body",
-          text: "Free play. Load a dataset, split, scale in the right order, fit, and score. Type help for the command map. Levels are where concepts get teeth.",
-        }),
-        h(
-          "div",
-          { class: "brief-goal" },
-          h("span", { class: "goal-chip", text: "goal" }),
-          "Build one honest pipeline end to end.",
-        ),
-      );
-      return;
-    }
-    const lv = currentLevel(view);
-    if (!lv) {
-      return;
-    }
-    const nodes: (Node | string)[] = [
-      h("div", { class: "brief-kicker", text: `${lv.worldTitle}  ·  ${lv.id}` }),
-      h("h1", { text: lv.concept.title }),
-      h("p", { class: "brief-body", text: lv.concept.body }),
-    ];
-    if (lv.concept.formula) {
-      nodes.push(h("div", { class: "brief-formula mono", text: lv.concept.formula }));
-    }
-    if (lv.concept.callout) {
-      nodes.push(h("div", { class: "brief-callout", text: lv.concept.callout }));
-    }
-    nodes.push(
-      h("div", { class: "brief-goal" }, h("span", { class: "goal-chip", text: "goal" }), lv.goal),
-    );
-    if (view.winFeedback) {
-      nodes.push(
-        h("div", {
-          class: `win-feedback ${view.winOk ? "is-win" : "is-fail"}`,
-          text: view.winFeedback,
-        }),
-      );
-    }
-    elBrief.append(...nodes);
-  }
-
   function renderSide(snap: SessionSnapshot): void {
+    // Rebuild side fully so checklist current-step stays in sync.
     elSide.replaceChildren();
 
-    const pipePanel = h("div", { class: "panel" }, h("h2", { text: "PIPELINE" }));
-    const pipe = h("div", { class: "pipeline" });
+    if (mode === "level") {
+      const lv = currentLevel();
+      if (lv) {
+        const stepHtml = (lv.steps ?? []).map((st) => {
+          const met = st.check(snap);
+          const firstUnmet = (lv.steps ?? []).find((s) => !s.check(snap));
+          const current = firstUnmet?.id === st.id;
+          const cls = met ? "met" : current ? "current" : "";
+          return `<li class="${cls}">
+            <div class="g-label">${escapeHtml(st.label)}</div>
+            <div class="g-detail">${escapeHtml(st.detail)}</div>
+            ${st.command ? `<code class="g-cmd">${escapeHtml(st.command)}</code>` : ""}
+          </li>`;
+        });
+        const goalBox = document.createElement("div");
+        goalBox.className = "panel goal-panel";
+        goalBox.innerHTML = `<h2>CHECKLIST</h2><ol class="goal-list">${stepHtml.join("")}</ol>`;
+        elSide.append(goalBox);
+      }
+    }
+
+    const pipePanel = document.createElement("div");
+    pipePanel.className = "panel";
+    pipePanel.innerHTML = `<h2>PIPELINE</h2>`;
+    const pipe = document.createElement("div");
+    pipe.className = "pipeline";
     if (snap.steps.length === 0) {
-      pipe.append(h("div", { class: "pipe-node" }, "no steps yet"));
+      pipe.append(Object.assign(document.createElement("div"), { className: "pipe-node", textContent: "no steps yet" }));
     }
     snap.steps.forEach((step, i) => {
       const active = i === snap.steps.length - 1;
-      pipe.append(
-        h(
-          "div",
-          { class: `pipe-node is-${step.status}${active ? " is-active" : ""}` },
-          h("span", { class: "dot" }),
-          step.label,
-        ),
-      );
+      const node = document.createElement("div");
+      node.className = `pipe-node is-${step.status}${active ? " is-active" : ""}`;
+      node.innerHTML = `<span class="dot"></span>${escapeHtml(step.label)}`;
+      pipe.append(node);
       if (step.detail) {
-        pipe.append(h("div", { class: "pipe-detail", text: step.detail }));
+        const d = document.createElement("div");
+        d.className = "pipe-detail";
+        d.textContent = step.detail;
+        pipe.append(d);
       }
     });
     pipePanel.append(pipe);
 
-    const metPanel = h("div", { class: "panel" }, h("h2", { text: "METRICS" }));
-    const table = h("table", { class: "metrics-table" });
+    const metPanel = document.createElement("div");
+    metPanel.className = "panel";
+    metPanel.innerHTML = `<h2>METRICS</h2>`;
+    const table = document.createElement("table");
+    table.className = "metrics-table";
     const push = (k: string, v: string) => {
-      const tr = h("tr");
-      tr.append(h("td", { text: k }), h("td", { text: v }));
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${escapeHtml(k)}</td><td>${escapeHtml(v)}</td>`;
       table.append(tr);
     };
     if (snap.dataset) {
@@ -338,33 +273,36 @@ export function mount(root: HTMLElement): void {
     }
     metPanel.append(table);
 
-    const lv = currentLevel(view);
-    if (view.mode === "level" && lv) {
-      const hintPanel = h("div", { class: "panel" }, h("h2", { text: "HINTS" }));
-      const ul = h("ul", { class: "hint-list" });
+    elSide.append(pipePanel, metPanel);
+
+    const lv = currentLevel();
+    if (mode === "level" && lv) {
+      const hintPanel = document.createElement("div");
+      hintPanel.className = "panel";
+      hintPanel.innerHTML = `<h2>HINTS</h2>`;
+      const ul = document.createElement("ul");
+      ul.className = "hint-list";
       for (const hint of lv.hints) {
-        ul.append(h("li", { text: hint }));
+        const li = document.createElement("li");
+        li.textContent = hint;
+        ul.append(li);
       }
       hintPanel.append(ul);
-      elSide.append(pipePanel, metPanel, hintPanel);
-    } else {
-      elSide.append(pipePanel, metPanel);
+      elSide.append(hintPanel);
     }
 
     elViz.querySelector(".leak-banner")?.remove();
     if (snap.scaleLeaked) {
-      elViz.prepend(
-        h("div", {
-          class: "leak-banner",
-          text: "LEAKAGE · scaler fit before split — test statistics already in the model",
-        }),
-      );
+      const ban = document.createElement("div");
+      ban.className = "leak-banner";
+      ban.textContent = "LEAKAGE · scaler fit before split — test statistics already in the model";
+      elViz.prepend(ban);
     }
   }
 
   let raf = 0;
   function paint(): void {
-    const snap = view.session.snapshot();
+    const snap = session.snapshot();
     const rect = elViz.getBoundingClientRect();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = Math.max(320, Math.floor(rect.width));
@@ -374,9 +312,7 @@ export function mount(root: HTMLElement): void {
     canvas.style.width = `${w}px`;
     canvas.style.height = `${ht}px`;
     const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      return;
-    }
+    if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     let scaledX = null;
@@ -395,18 +331,16 @@ export function mount(root: HTMLElement): void {
     const state: DrawState = {
       dataset: snap.dataset,
       split: snap.split,
-      model: view.liveModel,
+      model: liveModel,
       scaledX,
       kind: snap.fitted ? "fit" : "data",
-      fitProgress: view.fitProgress,
+      fitProgress,
     };
     drawStage(ctx, w, ht, state);
   }
 
   function schedulePaint(): void {
-    if (raf) {
-      return;
-    }
+    if (raf) return;
     raf = requestAnimationFrame(() => {
       raf = 0;
       paint();
@@ -414,9 +348,9 @@ export function mount(root: HTMLElement): void {
   }
 
   function bloomFit(): void {
-    view.fitProgress = 0;
+    fitProgress = 0;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      view.fitProgress = 1;
+      fitProgress = 1;
       paint();
       return;
     }
@@ -424,30 +358,69 @@ export function mount(root: HTMLElement): void {
     const dur = 420;
     const tick = () => {
       const t = Math.min(1, (performance.now() - t0) / dur);
-      view.fitProgress = t;
+      fitProgress = t;
       paint();
-      if (t < 1) {
-        requestAnimationFrame(tick);
-      }
+      if (t < 1) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
   }
 
+  function refreshHint(): void {
+    const lv = currentLevel();
+    if (mode !== "level" || !lv) {
+      terminal.setHint(null);
+      return;
+    }
+    const snap = session.snapshot();
+    const next = (lv.steps ?? []).find((s) => !s.check(snap));
+    terminal.setHint(next?.command ?? null);
+    terminal.setExtraCompletions(
+      (lv.steps ?? []).map((s) => s.command).filter((c): c is string => Boolean(c)),
+    );
+  }
+
   function renderAll(): void {
+    const snap = session.snapshot();
     renderRail();
-    renderBrief();
-    renderSide(view.session.snapshot());
-    renderLog();
+    renderSide(snap);
+    // brief depends on side being built for checklist — render brief content only
+    renderBriefContent(snap);
+    refreshHint();
     schedulePaint();
   }
 
+  function renderBriefContent(snap: SessionSnapshot): void {
+    elBrief.replaceChildren();
+    if (mode === "sandbox") {
+      elBrief.innerHTML = `
+        <div class="brief-kicker">SANDBOX</div>
+        <h1>Mess with the pipeline</h1>
+        <p class="brief-body">Free play. Load a dataset, split, scale in the right order, fit, and score. Type help for the command map. Levels are where concepts get teeth.</p>
+        <div class="brief-goal"><span class="goal-chip">goal</span>Build one honest pipeline end to end.</div>
+      `;
+      return;
+    }
+    const lv = currentLevel();
+    if (!lv) return;
+    elBrief.innerHTML = `
+      <div class="brief-kicker">${escapeHtml(lv.worldTitle)}  ·  ${escapeHtml(lv.id)}</div>
+      <h1>${escapeHtml(lv.concept.title)}</h1>
+      <p class="brief-body">${escapeHtml(lv.concept.body)}</p>
+      <p class="brief-body"><strong>What happens.</strong> ${escapeHtml(lv.concept.whatHappens)}</p>
+      <p class="brief-body"><strong>Why it matters.</strong> ${escapeHtml(lv.concept.why)}</p>
+      ${lv.concept.formula ? `<div class="brief-formula mono">${escapeHtml(lv.concept.formula)}</div>` : ""}
+      ${lv.concept.callout ? `<div class="brief-callout">${escapeHtml(lv.concept.callout)}</div>` : ""}
+      <div class="brief-goal"><span class="goal-chip">goal</span>${escapeHtml(lv.goal)}</div>
+      ${winFeedback ? `<div class="win-feedback ${winOk ? "is-win" : "is-fail"}">${escapeHtml(winFeedback)}</div>` : ""}
+    `;
+    void snap;
+  }
+
   function showWhat(what: string): string[] {
-    const snap = view.session.snapshot();
+    const snap = session.snapshot();
     switch (what) {
       case "data": {
-        if (!snap.dataset) {
-          return ["No dataset. `load blobs`"];
-        }
+        if (!snap.dataset) return ["No dataset. `load blobs`"];
         const ds = snap.dataset;
         return [
           `dataset ${ds.name}  task=${ds.task}`,
@@ -459,22 +432,14 @@ export function mount(root: HTMLElement): void {
         ];
       }
       case "pipeline": {
-        if (snap.steps.length === 0) {
-          return ["pipeline empty"];
-        }
+        if (snap.steps.length === 0) return ["pipeline empty"];
         return snap.steps.map((s) => `  [${s.status}] ${s.label}`);
       }
       case "metrics": {
         const out: string[] = [];
-        if (snap.trainMetrics) {
-          out.push(...formatMetrics(snap.trainMetrics, "train"));
-        }
-        if (snap.metrics) {
-          out.push(...formatMetrics(snap.metrics, "test"));
-        }
-        if (out.length === 0) {
-          out.push("No scores yet. `score test`");
-        }
+        if (snap.trainMetrics) out.push(...formatMetrics(snap.trainMetrics, "train"));
+        if (snap.metrics) out.push(...formatMetrics(snap.metrics, "test"));
+        if (out.length === 0) out.push("No scores yet. `score test`");
         return out;
       }
       case "code":
@@ -491,65 +456,222 @@ export function mount(root: HTMLElement): void {
     }
   }
 
+  function maybeCelebrate(prevWon: boolean, result: CommandResult): void {
+    const lv = currentLevel();
+    if (!lv || mode !== "level") return;
+    const wr = lv.win(result.snapshot);
+    winFeedback = wr.feedback;
+    winOk = wr.won;
+    if (!wr.won) return;
+
+    persistProgress(lv.id, session.snapshot().commandCount);
+    if (celebratedFor === lv.id && prevWon) return;
+    celebratedFor = lv.id;
+    offerCelebration(lv);
+  }
+
+  function offerCelebration(level: Level): void {
+    const cmds = session.snapshot().commandCount || null;
+    const curriculum = summarizeCurriculum(progress);
+    const share = buildShareTargets({
+      levelName: level.title,
+      levelId: level.id,
+      commands: cmds,
+      curriculum,
+    });
+    const next = nextLevel(level.id);
+    const cheer = CHEERS[Math.floor(Math.random() * CHEERS.length)] ?? CHEERS[0]!;
+    const learnedPreview = curriculum.learned
+      .map((l) => `<li>${escapeHtml(l.worldTitle)}: ${escapeHtml(l.name)}</li>`)
+      .join("");
+    const bodyHtml = `
+      <div class="celebrate" aria-live="polite">
+        <div class="celebrate-visual" aria-hidden="true">
+          <div class="celebrate-ring"></div>
+          <div class="celebrate-star">★</div>
+        </div>
+        <div class="celebrate-badge">LEVEL CLEARED</div>
+        <h3 class="celebrate-title">${escapeHtml(level.title)}</h3>
+        <p class="celebrate-sub">${escapeHtml(level.worldTitle)} · <code>${escapeHtml(level.id)}</code></p>
+        <p class="celebrate-cheer">${escapeHtml(cheer)}</p>
+        <div class="celebrate-stats">${renderMarkdown(
+          cmds ? `**${cmds}** commands this level.` : "Cleared.",
+        )}</div>
+        <div class="celebrate-progress">
+          <div class="prog-track"><div class="prog-fill" style="width:${curriculum.percent}%"></div></div>
+          <div class="par-note">${curriculum.solvedCount} / ${curriculum.total} levels solved · progress saved in this browser</div>
+        </div>
+        <div class="share-block">
+          <div class="next-title">Share what you learned</div>
+          <div class="learned-preview">
+            <div class="par-note">In the post body:</div>
+            <ul>${learnedPreview || `<li>Solve more levels to build the outline.</li>`}</ul>
+          </div>
+          <div class="share-row" role="group" aria-label="Share">
+            <button type="button" class="share-btn linkedin" data-share="linkedin">LinkedIn</button>
+            <button type="button" class="share-btn x" data-share="x">X</button>
+            <button type="button" class="share-btn facebook" data-share="facebook">Facebook</button>
+            <button type="button" class="share-btn copy" data-share="copy">Copy post</button>
+          </div>
+          <div class="share-status" data-share-status hidden></div>
+        </div>
+        <div class="celebrate-next">${renderMarkdown(
+          next
+            ? `Next: **${next.id} ${next.title}**`
+            : "World cleared. Sandbox is still open for practice.",
+        )}</div>
+        <div class="celebrate-next">${COFFEE_BUTTON_HTML}</div>
+      </div>
+    `;
+
+    const actions = [
+      {
+        label: "Bask in it",
+        className: "ghost",
+        onClick: () => terminal.focus(),
+      },
+    ];
+    if (next) {
+      actions.push({
+        label: `Celebrate on ${next.id}`,
+        className: "primary",
+        onClick: () => openLevel(next.id),
+      });
+    } else {
+      actions.push({
+        label: "Browse levels",
+        className: "primary",
+        onClick: () => {
+          mode = "level";
+          renderAll();
+          terminal.focus();
+        },
+      });
+    }
+
+    const confetti = launchConfetti(4800);
+    playFanfare();
+
+    const modal = showModal({
+      title: "Level complete",
+      bodyHtml,
+      variant: "celebrate",
+      actions: actions.map((a) => ({
+        ...a,
+        onClick: () => {
+          confetti?.stop();
+          modal.close();
+          a.onClick();
+        },
+      })),
+      onClose: () => {
+        confetti?.stop();
+        terminal.focus();
+      },
+    });
+
+    modal.el.querySelectorAll<HTMLButtonElement>("[data-share]").forEach((btn) => {
+      btn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        const kind = (btn.dataset.share ?? "copy") as
+          | "linkedin"
+          | "facebook"
+          | "x"
+          | "copy";
+        const status = modal.el.querySelector<HTMLElement>("[data-share-status]");
+        const result = await shareWithClipboard(kind, share);
+        if (!status) return;
+        status.hidden = false;
+        if (kind === "copy") {
+          status.textContent = result.copied ? "Copied." : "Copy failed.";
+          return;
+        }
+        status.textContent = result.copied
+          ? "Share window opened. Post text also copied as fallback."
+          : "Share window opened.";
+      });
+    });
+
+    modal.el.querySelector(".modal")?.addEventListener("keydown", (ev) => {
+      const key = (ev as KeyboardEvent).key;
+      if (key === "Enter" || key === "Tab") {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    });
+  }
+
   function openLevel(id: string): void {
     const lv = findLevel(id);
     if (!lv) {
-      view.lastLines.push({ kind: "err", text: `unknown level ${id}` });
+      terminal.push("err", `unknown level ${id}`);
       renderAll();
       return;
     }
-    view.mode = "level";
-    view.levelId = id;
-    view.session = new Session();
-    view.liveModel = null;
-    view.fitProgress = 0;
-    view.winFeedback = null;
-    view.winOk = false;
-    view.lastLines.push({ kind: "out", text: `— level ${lv.id}: ${lv.title} —` });
+    mode = "level";
+    levelId = id;
+    session = new Session();
+    liveModel = null;
+    fitProgress = 0;
+    winFeedback = null;
+    winOk = false;
+    celebratedFor = "";
+    lastCmdCount = 0;
+    terminal.push("out", `— level ${lv.id}: ${lv.title} —`);
+    terminal.push("meta", lv.goal);
     const s = lv.seedDataset;
     if (s) {
-      const r = view.session.load(s);
-      view.lastLines.push(...r.lines.map((text) => ({ kind: "out" as const, text })));
+      const r = session.load(s);
+      pushLines("out", r.lines);
     }
-    btnLevels.classList.add("is-active");
-    btnSandbox.classList.remove("is-active");
+    elChrome.querySelectorAll("[data-nav]").forEach((b) => {
+      b.classList.toggle("is-active", (b as HTMLElement).dataset.nav === "levels");
+    });
     renderAll();
+    terminal.focus();
   }
 
   function openSandbox(): void {
-    view.mode = "sandbox";
-    view.session = new Session();
-    view.liveModel = null;
-    view.fitProgress = 0;
-    view.winFeedback = null;
-    view.lastLines.push({ kind: "out", text: "— sandbox —" });
-    btnSandbox.classList.add("is-active");
-    btnLevels.classList.remove("is-active");
+    mode = "sandbox";
+    session = new Session();
+    liveModel = null;
+    fitProgress = 0;
+    winFeedback = null;
+    celebratedFor = "";
+    terminal.push("out", "— sandbox —");
+    elChrome.querySelectorAll("[data-nav]").forEach((b) => {
+      b.classList.toggle("is-active", (b as HTMLElement).dataset.nav === "sandbox");
+    });
     renderAll();
+    terminal.focus();
   }
 
   function runCommand(raw: string): void {
     const line = raw.trim();
-    if (!line) {
-      return;
-    }
-    view.lastLines.push({ kind: "cmd", text: `$ ${line}` });
+    if (!line) return;
+    terminal.push("cmd", line);
+    const wasWon = winOk;
     try {
-      const result = dispatch(view.session, line, {
+      const result = dispatch(session, line, {
         onShowLevels: () =>
           ALL_LEVELS.map((lv) => {
-            const mark = view.solved.has(lv.id) ? "✓" : "·";
+            const mark = progress[lv.id]?.solved ? "✓" : "·";
             return `  ${lv.id}  ${mark}  ${lv.title}`;
           }),
         onShowGoal: () => {
-          const lv = currentLevel(view);
+          const lv = currentLevel();
           if (!lv) {
             return ["Sandbox: build an honest pipeline (split → scale → fit → score test)."];
           }
-          return [`[${lv.id}] ${lv.goal}`, `Concept: ${lv.concept.title}`];
+          const snap = session.snapshot();
+          const steps = (lv.steps ?? []).map((st) => {
+            const mark = st.check(snap) ? "✓" : "·";
+            return `  ${mark} ${st.label}`;
+          });
+          return [`[${lv.id}] ${lv.goal}`, ...steps];
         },
         onHint: () => {
-          const lv = currentLevel(view);
+          const lv = currentLevel();
           return [...(lv?.hints ?? ["No hints in sandbox."])];
         },
         onRunLevel: (id) => {
@@ -558,50 +680,56 @@ export function mount(root: HTMLElement): void {
         },
         onShow: (what) => showWhat(what),
       });
-      for (const text of result.lines) {
-        view.lastLines.push({ kind: "out", text });
-      }
+      pushLines("out", result.lines);
       if (result.sklearn) {
-        view.lastLines.push({
-          kind: "sk",
-          text: `→ ${result.sklearn.split("\n")[0] ?? ""}`,
-        });
+        terminal.push("sk", `→ ${result.sklearn.split("\n")[0] ?? ""}`);
         setSklearn(result.sklearn);
       }
       const snap = result.snapshot;
       if (!snap.fitted) {
-        view.liveModel = null;
+        liveModel = null;
       } else {
-        view.liveModel = rebuildModel(snap);
+        liveModel = rebuildModel(snap);
       }
       if (line.toLowerCase().startsWith("fit ")) {
         bloomFit();
       } else {
-        view.fitProgress = snap.fitted ? 1 : 0;
+        fitProgress = snap.fitted ? 1 : 0;
       }
-      maybeWin(view, result);
+      maybeCelebrate(wasWon, result);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      view.lastLines.push({ kind: "err", text: `error: ${msg}` });
+      terminal.push("err", `error: ${msg}`);
     }
     renderAll();
-    input.value = "";
+    terminal.focus();
+    lastCmdCount = session.snapshot().commandCount;
+    void lastCmdCount;
   }
 
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      runCommand(input.value);
-    }
-  });
-
-  btnHelp.addEventListener("click", () => runCommand("help"));
-  btnLevels.addEventListener("click", () => openLevel(view.levelId));
-  btnSandbox.addEventListener("click", openSandbox);
+  elChrome.querySelector("[data-nav='levels']")?.addEventListener("click", () =>
+    openLevel(levelId),
+  );
+  elChrome.querySelector("[data-nav='sandbox']")?.addEventListener("click", openSandbox);
+  elChrome.querySelector("[data-nav='help']")?.addEventListener("click", () =>
+    runCommand("help"),
+  );
 
   window.addEventListener("resize", schedulePaint);
   setSklearn(null);
-  renderAll();
-  input.focus();
+
+  // Resume line when progress exists.
+  const summary = summarizeCurriculum(progress);
+  terminal.push("out", "LearnML · scikit-learn mental model sandbox");
+  if (summary.solvedCount > 0) {
+    pushLines("meta", resumeLine(summary).split("\n"));
+  }
+  openLevel(levelId);
+  if (summary.solvedCount > 0 && summary.next) {
+    terminal.push("meta", `Resume with \`run ${summary.next.id}\`.`);
+  }
+  void LIVE_URL;
+  void REPO_URL;
 }
 
 function colRange(X: { data: number[][] }, col: number): string {
