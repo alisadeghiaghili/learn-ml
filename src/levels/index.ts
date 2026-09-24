@@ -13,6 +13,9 @@ import { WORLD7_LEVELS } from "./world7";
 import { WORLD8_LEVELS } from "./world8";
 import { WORLD9_LEVELS } from "./world9";
 import { WORLD10_LEVELS } from "./world10";
+import { WORLD11_LEVELS } from "./world11";
+import { WORLD12_LEVELS } from "./world12";
+import { WORLD13_LEVELS } from "./world13";
 
 export const ALL_LEVELS: Level[] = [
   ...WORLD1_LEVELS,
@@ -25,6 +28,9 @@ export const ALL_LEVELS: Level[] = [
   ...WORLD8_LEVELS,
   ...WORLD9_LEVELS,
   ...WORLD10_LEVELS,
+  ...WORLD11_LEVELS,
+  ...WORLD12_LEVELS,
+  ...WORLD13_LEVELS,
 ];
 
 export function findLevel(id: string): Level | undefined {
@@ -42,4 +48,7 @@ export {
   WORLD8_LEVELS,
   WORLD9_LEVELS,
   WORLD10_LEVELS,
+  WORLD11_LEVELS,
+  WORLD12_LEVELS,
+  WORLD13_LEVELS,
 };

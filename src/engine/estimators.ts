@@ -345,6 +345,122 @@ export function fitLasso(X: Matrix, y: Vector, params: ModelParams = {}): Fitted
   };
 }
 
+export function fitElasticNet(X: Matrix, y: Vector, params: ModelParams = {}): FittedModel {
+  const alpha = Number(params.alpha ?? 0.1);
+  const l1Ratio = Number(params.l1_ratio ?? 0.5);
+  const p = X.nCols;
+  let w = Array<number>(p).fill(0);
+  let b = mean(y);
+  const n = X.nRows;
+  const epochs = Number(params.epochs ?? 300);
+  for (let epoch = 0; epoch < epochs; epoch += 1) {
+    b = mean(
+      vector(
+        X.data.map((row, i) => (y.data[i] ?? 0) - row.reduce((s, v, j) => s + (w[j] ?? 0) * v, 0)),
+      ),
+    );
+    for (let j = 0; j < p; j += 1) {
+      let rSum = 0;
+      let xNorm = 0;
+      for (let i = 0; i < n; i += 1) {
+        const row = X.data[i] ?? [];
+        let pred = b;
+        for (let k = 0; k < p; k += 1) {
+          if (k !== j) pred += (w[k] ?? 0) * (row[k] ?? 0);
+        }
+        const xj = row[j] ?? 0;
+        rSum += xj * ((y.data[i] ?? 0) - pred);
+        xNorm += xj * xj + (1 - l1Ratio) * alpha * n;
+      }
+      const rho = rSum / n;
+      const z = xNorm / n || 1;
+      const thresh = alpha * l1Ratio;
+      const soft = Math.sign(rho) * Math.max(0, Math.abs(rho) - thresh);
+      w[j] = soft / z;
+    }
+  }
+  const weights = [...w];
+  const intercept = b;
+  const predict = (Xs: Matrix): Vector => linearPredict(Xs, weights, intercept);
+  return {
+    name: "elasticnet",
+    task: "regression",
+    params: { ...params, alpha, l1_ratio: l1Ratio },
+    weights,
+    intercept,
+    predict,
+    decision: predict,
+    trainN: X.nRows,
+  };
+}
+
+export function fitDbscan(X: Matrix, _y: Vector, params: ModelParams = {}): FittedModel {
+  const eps = Number(params.eps ?? 0.8);
+  const minPts = Number(params.min_samples ?? 4);
+  const n = X.nRows;
+  const labels = Array<number>(n).fill(-1);
+  let cluster = 0;
+  const dist = (a: number[], b: number[]) => {
+    let d = 0;
+    for (let j = 0; j < a.length; j += 1) d += ((a[j] ?? 0) - (b[j] ?? 0)) ** 2;
+    return Math.sqrt(d);
+  };
+  const neighbors = (i: number) => {
+    const out: number[] = [];
+    for (let j = 0; j < n; j += 1) {
+      if (dist(X.data[i] ?? [], X.data[j] ?? []) <= eps) out.push(j);
+    }
+    return out;
+  };
+  for (let i = 0; i < n; i += 1) {
+    if ((labels[i] ?? -1) !== -1) continue;
+    const nb = neighbors(i);
+    if (nb.length < minPts) {
+      labels[i] = -1;
+      continue;
+    }
+    labels[i] = cluster;
+    const queue = [...nb];
+    while (queue.length) {
+      const j = queue.pop() ?? 0;
+      if ((labels[j] ?? -1) === -1) labels[j] = cluster;
+      if ((labels[j] ?? -1) !== -1 && labels[j] !== cluster && labels[j] !== -1) continue;
+      labels[j] = cluster;
+      const nbj = neighbors(j);
+      if (nbj.length >= minPts) {
+        for (const k of nbj) {
+          if ((labels[k] ?? -1) === -1) queue.push(k);
+        }
+      }
+    }
+    cluster += 1;
+  }
+  const predict = (Xs: Matrix): Vector =>
+    vector(
+      Xs.data.map((row) => {
+        let best = -1;
+        let bestD = eps;
+        for (let i = 0; i < n; i += 1) {
+          if ((labels[i] ?? -1) < 0) continue;
+          const d = dist(row, X.data[i] ?? []);
+          if (d <= bestD) {
+            bestD = d;
+            best = labels[i] ?? -1;
+          }
+        }
+        return best;
+      }),
+    );
+  return {
+    name: "dbscan",
+    task: "classification",
+    params: { ...params, eps, min_samples: minPts },
+    predict,
+    decision: predict,
+    trainN: X.nRows,
+  };
+}
+
 interface TreeNode {
   readonly leaf?: boolean;
   readonly value?: number;
@@ -679,11 +795,13 @@ const SKLEARN_NAME: Record<ModelName, string> = {
   knn: "KNeighborsClassifier",
   ridge: "Ridge",
   lasso: "Lasso",
+  elasticnet: "ElasticNet",
   dummy: "DummyRegressor",
   tree: "DecisionTreeClassifier",
   forest: "RandomForestClassifier",
   boost: "GradientBoostingClassifier",
   kmeans: "KMeans",
+  dbscan: "DBSCAN",
   pca_knn: "PCA+KNeighborsClassifier",
 };
 
@@ -721,6 +839,8 @@ export function fitModel(
       return fitRidge(X, y, params);
     case "lasso":
       return fitLasso(X, y, params);
+    case "elasticnet":
+      return fitElasticNet(X, y, params);
     case "logistic":
       return fitLogistic(X, y, params);
     case "knn":
@@ -735,6 +855,8 @@ export function fitModel(
       return fitBoost(X, y, params);
     case "kmeans":
       return fitKmeans(X, y, params);
+    case "dbscan":
+      return fitDbscan(X, y, params);
     case "pca_knn":
       return fitPcaKnn(X, y, params);
     default:
@@ -755,6 +877,8 @@ export function defaultParams(name: ModelName): ModelParams {
       return { alpha: 1 };
     case "lasso":
       return { alpha: 0.1 };
+    case "elasticnet":
+      return { alpha: 0.1, l1_ratio: 0.5 };
     case "tree":
       return { max_depth: 3 };
     case "forest":
@@ -763,6 +887,8 @@ export function defaultParams(name: ModelName): ModelParams {
       return { n_estimators: 20, max_depth: 2, lr: 0.3 };
     case "kmeans":
       return { n_clusters: 3 };
+    case "dbscan":
+      return { eps: 0.8, min_samples: 4 };
     case "pca_knn":
       return { n_components: 1, n_neighbors: 5 };
     default:

@@ -375,4 +375,37 @@ describe("world 3-7 smoke", () => {
     t.score("test");
     expect(t.snapshot().scoredOn).toBe("test");
   });
+
+  it("infer, fe, AUC, nested CV, silhouette work", () => {
+    const s = new Session();
+    s.load("noisy_line");
+    s.split_(0.2, 42);
+    s.fit("linear");
+    s.infer();
+    expect(s.snapshot().coefReport?.length).toBeGreaterThan(1);
+
+    const m = new Session();
+    m.load("mixed_table");
+    m.split_(0.25, 42);
+    m.impute("mean");
+    m.fe("target");
+    m.fit("logistic");
+    m.score("test");
+    const met = m.snapshot().metrics as { rocAuc: number; prAuc: number };
+    expect(met.rocAuc).toBeGreaterThan(0.4);
+
+    const n = new Session();
+    n.load("poly_curve");
+    n.split_(0.25, 42);
+    n.poly(3);
+    n.nestedCv("ridge", { alpha: [0.1, 1] }, 3);
+    expect(n.snapshot().nestedCvOuter?.length).toBe(3);
+
+    const k = new Session();
+    k.load("clusters");
+    k.split_(0.2, 42);
+    k.fit("kmeans", { n_clusters: 3 });
+    k.sil();
+    expect(k.snapshot().silhouette).not.toBeNull();
+  });
 });

@@ -26,7 +26,7 @@ npm run build
 
 ## Modes
 
-- **Levels** — Ten worlds from fit discipline to shippable claims:
+- **Levels** — Thirteen worlds from fit discipline to estimator contracts:
   1. Fit is not understanding
   2. Metrics lie
   3. Complexity is a budget (polynomial, residuals, Ridge/Lasso)
@@ -37,6 +37,9 @@ npm run build
   8. Honest selection (learning curves, nested roles, Pipeline/joblib)
   9. Statistical honesty (bootstrap CI, log-loss, stratified/time splits)
   10. Capacity tax (boosting, temporal leakage, end-to-end claim)
+  11. Inference (coefficients + SE, assumptions, ElasticNet)
+  12. Metrics pack (ROC-AUC, PR-AUC, target encoding, binning)
+  13. Structure & contracts (importance, silhouette, nested CV, estimator API)
 - **Sandbox** — free play with the same command surface.
 
 ## Command surface

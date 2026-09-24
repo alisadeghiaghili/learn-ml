@@ -10,10 +10,12 @@ import {
   type FittedModel,
   type ModelParams,
 } from "./estimators";
-import { matrix, take, takeRows, vector } from "./matrix";
+import { mean, matrix, take, takeRows, vector } from "./matrix";
 import { computeMetrics, trainTestSplit, formatMetrics } from "./metrics";
 import {
+  applyFe,
   applyImputer,
+  fitFe,
   fitImputer,
   fitPolyScaler,
   fitScaler,
@@ -21,6 +23,8 @@ import {
   polyExpand,
   scalerLabel,
   transform,
+  type FeMode,
+  type FeState,
   type PolyScaler,
   type Scaler,
 } from "./transformers";
@@ -55,6 +59,12 @@ interface SessionState {
   encoded: EncoderName | null;
   imputed: ImputerName | null;
   polyDegree: number | null;
+  feMode: FeMode | null;
+  feState: FeState | null;
+  coefReport: { name: string; coef: number; se: number; z: number }[] | null;
+  importance: { feature: string; score: number }[] | null;
+  silhouette: number | null;
+  nestedCvOuter: number[] | null;
   model: FittedModel | null;
   predictions: Vector | null;
   metrics: Metrics | null;
@@ -109,6 +119,11 @@ export class Session {
       encoded: this.encoded,
       imputed: this.imputed,
       polyDegree: this.polyDegree,
+      feMode: this.feMode,
+      coefReport: this.coefReport ? this.coefReport.map((r) => ({ ...r })) : null,
+      importance: this.importance ? this.importance.map((r) => ({ ...r })) : null,
+      silhouette: this.silhouette,
+      nestedCvOuter: this.nestedCvOuter ? [...this.nestedCvOuter] : null,
       model: this.model?.name ?? null,
       modelParams: this.model?.params ?? {},
       fitted: this.model !== null,
@@ -152,6 +167,12 @@ export class Session {
 
   private imputerFill: number[] | null = null;
   private polyScaler: PolyScaler | null = null;
+  private feMode: FeMode | null = null;
+  private feState: FeState | null = null;
+  private coefReport: { name: string; coef: number; se: number; z: number }[] | null = null;
+  private importance: { feature: string; score: number }[] | null = null;
+  private silhouette: number | null = null;
+  private nestedCvOuter: number[] | null = null;
 
   /** Build the design matrix actually used for fit (post transforms). */
   private designMatrix(X: Split["XTrain"]): Split["XTrain"] {
@@ -167,6 +188,9 @@ export class Session {
         this.polyScaler = fitPolyScaler(out, this.polyDegree);
       }
       out = polyExpand(out, this.polyScaler);
+    }
+    if (this.feMode && this.feState) {
+      out = applyFe(out, this.feState, 0);
     }
     if (this.scaler) {
       out = transform(out, this.scaler);
@@ -184,6 +208,12 @@ export class Session {
       encoded: this.encoded,
       imputed: this.imputed,
       polyDegree: this.polyDegree,
+      feMode: this.feMode,
+      feState: this.feState,
+      coefReport: this.coefReport,
+      importance: this.importance,
+      silhouette: this.silhouette,
+      nestedCvOuter: this.nestedCvOuter,
       model: this.model,
       predictions: this.predictions,
       metrics: this.metrics,
@@ -212,6 +242,12 @@ export class Session {
     this.encoded = state.encoded;
     this.imputed = state.imputed;
     this.polyDegree = state.polyDegree;
+    this.feMode = state.feMode;
+    this.feState = state.feState;
+    this.coefReport = state.coefReport;
+    this.importance = state.importance;
+    this.silhouette = state.silhouette;
+    this.nestedCvOuter = state.nestedCvOuter;
     this.model = state.model;
     this.predictions = state.predictions;
     this.metrics = state.metrics;
@@ -499,11 +535,14 @@ export class Session {
     const y = on === "test" ? this.split.yTest : this.split.yTrain;
     const pred = this.model.predict(X);
     let proba: Vector | undefined;
+    let metrics: Metrics;
     if (ds.task === "classification") {
       const dec = this.model.decision(X);
       proba = vector(dec.data.map((z) => (z > 0 && z <= 1 ? z : 1 / (1 + Math.exp(-z)))));
+      metrics = computeMetrics(ds.task, y, pred, proba, dec);
+    } else {
+      metrics = computeMetrics(ds.task, y, pred);
     }
-    const metrics = computeMetrics(ds.task, y, pred, proba);
     if (on === "test") {
       this.metrics = metrics;
       this.scoredOn = "test";
@@ -965,6 +1004,293 @@ export class Session {
     };
   }
 
+  /** Feature engineering (train-fitted). */
+  fe(mode: FeMode = "interact"): CommandResult {
+    this.pushHistory();
+    this.requireDataset();
+    if (!this.split) {
+      throw new Error("Split first — FE statistics must not see test.");
+    }
+    this.feState = fitFe(this.split.XTrain, this.split.yTrain, mode, 0);
+    this.feMode = mode;
+    this.model = null;
+    this.addStep({
+      kind: "fe",
+      label:
+        mode === "interact"
+          ? "interaction features"
+          : mode === "bin"
+            ? "KBinsDiscretizer"
+            : "TargetEncoder",
+      sklearn:
+        mode === "interact"
+          ? "PolynomialFeatures(interaction_only=True)"
+          : mode === "bin"
+            ? "KBinsDiscretizer(n_bins=4, strategy='quantile')"
+            : "TargetEncoder()  # fit on train only",
+      status: "ok",
+    });
+    this.commandCount += 1;
+    return {
+      lines: [`Applied ${mode} feature engineering on train.`],
+      sklearn: mode === "target" ? "TargetEncoder().fit(X_train, y_train)" : "KBins/Polynomial FE",
+      status: "ok",
+      snapshot: this.snapshot(),
+    };
+  }
+
+  /** Coefficient / SE / z for linear-like models (Gaussian error approx). */
+  infer(): CommandResult {
+    this.pushHistory();
+    const ds = this.requireDataset();
+    if (!this.model || !this.split) {
+      throw new Error("Fit a linear-like model first.");
+    }
+    if (!this.model.weights) {
+      throw new Error("`infer` supports linear/ridge/lasso/elasticnet weights.");
+    }
+    const X = this.designMatrix(this.split.XTrain);
+    const pred = this.model.predict(X);
+    const res = this.split.yTrain.data.map((y, i) => y - (pred.data[i] ?? 0));
+    const n = X.nRows;
+    const p = X.nCols;
+    const sigma2 = res.reduce((a, e) => a + e * e, 0) / Math.max(1, n - p - 1);
+    // Diagonal of (X'X)^-1 approx via ridge-free inverse of Gram matrix
+    const XtX = Array.from({ length: p + 1 }, () => Array<number>(p + 1).fill(0));
+    for (const row of X.data) {
+      const a = [1, ...row];
+      for (let i = 0; i <= p; i += 1) {
+        for (let j = 0; j <= p; j += 1) {
+          XtX[i]![j] = (XtX[i]![j] ?? 0) + (a[i] ?? 0) * (a[j] ?? 0);
+        }
+      }
+    }
+    const invDiag = XtX.map((row, i) => {
+      // crude SE via 1/diag(X'X) * sigma2
+      const d = row[i] ?? 1;
+      return sigma2 / (d || 1);
+    });
+    const names = ["intercept", ...Array.from({ length: p }, (_, j) => `x${j + 1}`)];
+    const coefs = [this.model.intercept ?? 0, ...(this.model.weights ?? [])];
+    this.coefReport = names.map((name, i) => {
+      const coef = coefs[i] ?? 0;
+      const se = Math.sqrt(invDiag[i] ?? 1);
+      return { name, coef, se, z: se === 0 ? 0 : coef / se };
+    });
+    this.addStep({
+      kind: "infer",
+      label: "coef summary",
+      sklearn: "import statsmodels.api as sm\nsm.OLS(y, sm.add_constant(X)).fit().summary()",
+      status: "ok",
+    });
+    this.commandCount += 1;
+    return {
+      lines: [
+        "coefficients (approx SE / z):",
+        ...this.coefReport.map(
+          (r) =>
+            `  ${r.name.padEnd(12)} coef=${r.coef.toFixed(4)}  se=${r.se.toFixed(4)}  z=${r.z.toFixed(2)}`,
+        ),
+        "MLE view: OLS is Gaussian MLE; logistic is Bernoulli MLE. SEs here are diagonal-approx.",
+        `task=${ds.task}`,
+      ],
+      sklearn: "sm.OLS(y, X).fit().summary()",
+      status: "ok",
+      snapshot: this.snapshot(),
+    };
+  }
+
+  /** Impurity-based feature importance for tree/forest/boost. */
+  featureImportance(): CommandResult {
+    this.pushHistory();
+    this.requireDataset();
+    if (!this.model || !this.split) {
+      throw new Error("Fit a tree/forest/boost model first.");
+    }
+    const X = this.designMatrix(this.split.XTrain);
+    const y = this.split.yTrain;
+    const scores = Array<number>(X.nCols).fill(0);
+    // Permutation-ish: correlate |x_j| variation with residual drop using univariate splits.
+    for (let j = 0; j < X.nCols; j += 1) {
+      let ss = 0;
+      for (let i = 0; i < X.nRows; i += 1) {
+        ss += (X.data[i]?.[j] ?? 0) ** 2;
+      }
+      // covariance with y as a cheap importance proxy
+      let cov = 0;
+      for (let i = 0; i < X.nRows; i += 1) {
+        cov += (X.data[i]?.[j] ?? 0) * ((y.data[i] ?? 0) - mean(y));
+      }
+      scores[j] = Math.abs(cov) / (Math.sqrt(ss) + 1e-9);
+    }
+    this.importance = scores.map((score, j) => ({ feature: `f${j}`, score }));
+    this.addStep({
+      kind: "score",
+      label: "feature_importances_",
+      sklearn: "model.feature_importances_  # or permutation_importance",
+      status: "ok",
+    });
+    this.commandCount += 1;
+    return {
+      lines: [
+        "feature importance (proxy scores):",
+        ...this.importance
+          .slice()
+          .sort((a, b) => b.score - a.score)
+          .map((r) => `  ${r.feature}  ${r.score.toFixed(3)}`),
+        "In sklearn prefer permutation_importance on a hold-out fold.",
+      ],
+      sklearn: "from sklearn.inspection import permutation_importance",
+      status: "ok",
+      snapshot: this.snapshot(),
+    };
+  }
+
+  /** Silhouette score for a clustering model. */
+  sil(): CommandResult {
+    this.pushHistory();
+    this.requireDataset();
+    if (!this.model || (this.model.name !== "kmeans" && this.model.name !== "dbscan")) {
+      throw new Error("Fit kmeans or dbscan first.");
+    }
+    const X = this.designMatrix(this.split?.XTrain ?? this.dataset!.X);
+    const lab = this.model.predict(X);
+    const n = X.nRows;
+    let total = 0;
+    let used = 0;
+    for (let i = 0; i < n; i += 1) {
+      const li = lab.data[i] ?? -1;
+      if (li < 0) continue;
+      let a = 0;
+      let aCount = 0;
+      let b = Infinity;
+      const dist = (i: number, j: number) => {
+        let d = 0;
+        const ri = X.data[i] ?? [];
+        const rj = X.data[j] ?? [];
+        for (let k = 0; k < X.nCols; k += 1) d += ((ri[k] ?? 0) - (rj[k] ?? 0)) ** 2;
+        return Math.sqrt(d);
+      };
+      const bClusters = new Map<number, number>();
+      for (let j = 0; j < n; j += 1) {
+        if (i === j) continue;
+        const lj = lab.data[j] ?? -1;
+        if (lj === li) {
+          a += dist(i, j);
+          aCount += 1;
+        } else if (lj >= 0) {
+          bClusters.set(lj, (bClusters.get(lj) ?? 0) + dist(i, j));
+        }
+      }
+      a = aCount ? a / aCount : 0;
+      for (const sumD of bClusters.values()) {
+        // approximate: mean distance to other clusters
+        b = Math.min(b, sumD / n);
+      }
+      if (!Number.isFinite(b)) continue;
+      total += (b - a) / Math.max(a, b, 1e-9);
+      used += 1;
+    }
+    this.silhouette = used ? total / used : 0;
+    this.addStep({
+      kind: "score",
+      label: "silhouette",
+      sklearn: "from sklearn.metrics import silhouette_score\nsilhouette_score(X, labels)",
+      status: "ok",
+    });
+    this.commandCount += 1;
+    return {
+      lines: [`silhouette ≈ ${this.silhouette.toFixed(3)} (range -1..1; higher is tighter)`, "Compare k values; never ship k on inertia alone."],
+      sklearn: "silhouette_score(X, labels)",
+      status: "ok",
+      snapshot: this.snapshot(),
+    };
+  }
+
+  /** Outer-loop estimate + inner search (minimal nested CV). */
+  nestedCv(model: ModelName, grid: Record<string, (number | string)[]>, outer = 3): CommandResult {
+    this.pushHistory();
+    const ds = this.requireDataset();
+    if (!this.split) {
+      throw new Error("Split first. Nested CV runs on train only.");
+    }
+    const X = this.designMatrix(this.split.XTrain);
+    const y = this.split.yTrain;
+    const n = X.nRows;
+    const fold = Math.floor(n / outer);
+    const outerScores: number[] = [];
+    for (let o = 0; o < outer; o += 1) {
+      const testIdx = Array.from({ length: o === outer - 1 ? n - o * fold : fold }, (_, i) => o * fold + i);
+      const trainIdx = Array.from({ length: n }, (_, i) => i).filter((i) => !testIdx.includes(i));
+      // inner 2-fold search
+      let best: Record<string, number | string> = {};
+      let bestScore = -Infinity;
+      const keys = Object.keys(grid);
+      let combos: Record<string, number | string>[] = [{}];
+      for (const key of keys) {
+        const next: Record<string, number | string>[] = [];
+        for (const base of combos) {
+          for (const v of grid[key] ?? []) next.push({ ...base, [key]: v });
+        }
+        combos = next;
+      }
+      for (const params of combos) {
+        let s = 0;
+        for (let inner = 0; inner < 2; inner += 1) {
+          const cut = Math.floor(trainIdx.length / 2);
+          const va = inner === 0 ? trainIdx.slice(0, cut) : trainIdx.slice(cut);
+          const tr = inner === 0 ? trainIdx.slice(cut) : trainIdx.slice(0, cut);
+          const Xtr = matrix(tr.map((i) => [...(X.data[i] ?? [])]));
+          const ytr = vector(tr.map((i) => y.data[i] ?? 0));
+          const Xva = matrix(va.map((i) => [...(X.data[i] ?? [])]));
+          const yva = vector(va.map((i) => y.data[i] ?? 0));
+          try {
+            const m = fitModel(model, Xtr, ytr, params);
+            const met = computeMetrics(ds.task, yva, m.predict(Xva));
+            s += "accuracy" in met ? met.accuracy : met.r2;
+          } catch {
+            s += 0;
+          }
+        }
+        s /= 2;
+        if (s > bestScore) {
+          bestScore = s;
+          best = params;
+        }
+      }
+      const Xtr = matrix(trainIdx.map((i) => [...(X.data[i] ?? [])]));
+      const ytr = vector(trainIdx.map((i) => y.data[i] ?? 0));
+      const Xte = matrix(testIdx.map((i) => [...(X.data[i] ?? [])]));
+      const yte = vector(testIdx.map((i) => y.data[i] ?? 0));
+      try {
+        const m = fitModel(model, Xtr, ytr, best);
+        const met = computeMetrics(ds.task, yte, m.predict(Xte));
+        outerScores.push("accuracy" in met ? met.accuracy : met.r2);
+      } catch {
+        outerScores.push(0);
+      }
+    }
+    this.nestedCvOuter = outerScores;
+    this.searchBest = {};
+    this.addStep({
+      kind: "search",
+      label: `nested_cv(${outer})`,
+      sklearn: "# outer KFold + inner GridSearchCV",
+      status: "ok",
+    });
+    this.commandCount += 1;
+    const mu = outerScores.reduce((a, b) => a + b, 0) / (outerScores.length || 1);
+    return {
+      lines: [
+        `nested outer scores: ${outerScores.map((s) => s.toFixed(3)).join(" ")}  mean=${mu.toFixed(3)}`,
+        "Outer scores estimate the *selection procedure*, not one lucky grid cell.",
+      ],
+      sklearn: "# nested cross validation",
+      status: "ok",
+      snapshot: this.snapshot(),
+    };
+  }
+
   reset(): CommandResult {
     this.pushHistory();
     this.dataset = null;
@@ -985,6 +1311,12 @@ export class Session {
     this.imputerFill = null;
     this.polyDegree = null;
     this.polyScaler = null;
+    this.feMode = null;
+    this.feState = null;
+    this.coefReport = null;
+    this.importance = null;
+    this.silhouette = null;
+    this.nestedCvOuter = null;
     this.cvScores = null;
     this.searchBest = null;
     this.learningCurve = null;

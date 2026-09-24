@@ -192,3 +192,81 @@ export function imputerLabel(name: ImputerName): string {
 export function encoderLabel(name: EncoderName): string {
   return name === "onehot" ? "OneHotEncoder" : "OrdinalEncoder";
 }
+
+/**
+ * Feature engineering transforms: interaction, binning, target encoding.
+ */
+export type FeMode = "interact" | "bin" | "target";
+
+export interface FeState {
+  mode: FeMode;
+  bins: number[];
+  targetMap: Record<string, number>;
+}
+
+/**
+ * Fit FE params on train only (bins / target means).
+ */
+export function fitFe(
+  X: Matrix,
+  y: Vector,
+  mode: FeMode,
+  feature = 0,
+): FeState {
+  if (mode === "bin") {
+    const col = X.data.map((r) => r[feature] ?? 0).filter(Number.isFinite).sort((a, b) => a - b);
+    const bins = [25, 50, 75].map((p) => col[Math.min(col.length - 1, Math.floor((p / 100) * col.length))] ?? 0);
+    return { mode, bins, targetMap: {} };
+  }
+  if (mode === "target") {
+    const map: Record<string, number> = {};
+    const sums: Record<string, number> = {};
+    const cnt: Record<string, number> = {};
+    for (let i = 0; i < X.nRows; i += 1) {
+      const key = String(Math.round(X.data[i]?.[feature] ?? 0));
+      sums[key] = (sums[key] ?? 0) + (y.data[i] ?? 0);
+      cnt[key] = (cnt[key] ?? 0) + 1;
+    }
+    for (const k of Object.keys(sums)) {
+      map[k] = (sums[k] ?? 0) / (cnt[k] ?? 1);
+    }
+    return { mode, bins: [], targetMap: map };
+  }
+  return { mode, bins: [], targetMap: {} };
+}
+
+export function applyFe(X: Matrix, state: FeState, feature = 0): Matrix {
+  if (state.mode === "interact") {
+    return matrix(
+      X.data.map((row) => {
+        const a = row[0] ?? 0;
+        const b = row[1] ?? a;
+        return [...row, a * b];
+      }),
+    );
+  }
+  if (state.mode === "bin") {
+    return matrix(
+      X.data.map((row) => {
+        const v = row[feature] ?? 0;
+        const bin = state.bins.filter((b) => v > b).length;
+        return [...row, bin];
+      }),
+    );
+  }
+  if (state.mode === "target") {
+    return matrix(
+      X.data.map((row) => {
+        const key = String(Math.round(row[feature] ?? 0));
+        return [...row, state.targetMap[key] ?? 0];
+      }),
+    );
+  }
+  return X;
+}
+
+export function feLabel(mode: FeMode): string {
+  if (mode === "interact") return "PolynomialFeatures(interaction_only=True)";
+  if (mode === "bin") return "KBinsDiscretizer(n_bins=4, encode='ordinal')";
+  return "TargetEncoder()";
+}

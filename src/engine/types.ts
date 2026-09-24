@@ -22,11 +22,13 @@ export type ModelName =
   | "knn"
   | "ridge"
   | "lasso"
+  | "elasticnet"
   | "dummy"
   | "tree"
   | "forest"
   | "boost"
   | "kmeans"
+  | "dbscan"
   | "pca_knn";
 
 export type ScalerName = "standard" | "minmax";
@@ -72,6 +74,8 @@ export interface ClassificationMetrics {
   readonly recall: number;
   readonly f1: number;
   readonly logLoss: number;
+  readonly rocAuc: number;
+  readonly prAuc: number;
   readonly confusion: readonly (readonly number[])[];
   readonly n: number;
 }
@@ -92,6 +96,7 @@ export type StepKind =
   | "encode"
   | "impute"
   | "poly"
+  | "fe"
   | "fit"
   | "predict"
   | "score"
@@ -100,6 +105,7 @@ export type StepKind =
   | "curve"
   | "pipeline"
   | "boost"
+  | "infer"
   | "reset";
 
 export interface PipelineStep {
@@ -155,6 +161,7 @@ export interface SessionSnapshot {
   readonly encoded: EncoderName | null;
   readonly imputed: ImputerName | null;
   readonly polyDegree: number | null;
+  readonly feMode: "none" | "interact" | "bin" | "target" | null;
   readonly model: ModelName | null;
   readonly modelParams: Readonly<Record<string, number | string>>;
   readonly fitted: boolean;
@@ -165,6 +172,10 @@ export interface SessionSnapshot {
   readonly searchBest: Readonly<Record<string, number | string>> | null;
   readonly learningCurve: readonly { train: number; valid: number; n: number }[] | null;
   readonly bootstrapCi: readonly [number, number] | null;
+  readonly coefReport: readonly { name: string; coef: number; se: number; z: number }[] | null;
+  readonly importance: readonly { feature: string; score: number }[] | null;
+  readonly silhouette: number | null;
+  readonly nestedCvOuter: readonly number[] | null;
   readonly pipelineSaved: boolean;
   readonly splitStrategy: "random" | "stratified" | "time" | null;
   readonly steps: readonly PipelineStep[];

@@ -68,20 +68,53 @@ export function trainTestSplit(
 }
 
 /**
- * Classification metrics for binary labels {0, 1}, including log-loss.
- *
- * Args:
- *   yTrue: Ground-truth labels.
- *   yPred: Predicted labels (hard 0/1).
- *   yProba: Optional positive-class probabilities for log-loss.
- *
- * Returns:
- *   Accuracy, precision, recall, F1, log-loss, and 2x2 confusion [[TN, FP], [FN, TP]].
+ * Rank-based ROC-AUC (Mann–Whitney U).
+ */
+export function rocAuc(yTrue: Vector, scores: Vector): number {
+  const pairs = scores.data.map((s, i) => ({ s, y: (yTrue.data[i] ?? 0) >= 0.5 ? 1 : 0 }));
+  const pos = pairs.filter((p) => p.y === 1);
+  const neg = pairs.filter((p) => p.y === 0);
+  if (pos.length === 0 || neg.length === 0) return 0.5;
+  let wins = 0;
+  for (const p of pos) {
+    for (const n of neg) {
+      if (p.s > n.s) wins += 1;
+      else if (p.s === n.s) wins += 0.5;
+    }
+  }
+  return wins / (pos.length * neg.length);
+}
+
+/**
+ * Average precision (PR-AUC approximation via step-wise AP).
+ */
+export function prAuc(yTrue: Vector, scores: Vector): number {
+  const pairs = scores.data.map((s, i) => ({ s, y: (yTrue.data[i] ?? 0) >= 0.5 ? 1 : 0 }));
+  pairs.sort((a, b) => b.s - a.s);
+  const nPos = pairs.filter((p) => p.y === 1).length || 1;
+  let tp = 0;
+  let fp = 0;
+  let ap = 0;
+  let prevRec = 0;
+  for (const p of pairs) {
+    if (p.y === 1) tp += 1;
+    else fp += 1;
+    const rec = tp / nPos;
+    const prec = tp / (tp + fp);
+    ap += (rec - prevRec) * prec;
+    prevRec = rec;
+  }
+  return ap;
+}
+
+/**
+ * Classification metrics for binary labels {0, 1}, including log-loss and AUCs.
  */
 export function classificationMetrics(
   yTrue: Vector,
   yPred: Vector,
   yProba?: Vector,
+  yScore?: Vector,
 ): ClassificationMetrics {
   let tp = 0;
   let fp = 0;
@@ -112,12 +145,15 @@ export function classificationMetrics(
   const precision = tp + fp === 0 ? 0 : tp / (tp + fp);
   const recall = tp + fn === 0 ? 0 : tp / (tp + fn);
   const f1 = precision + recall === 0 ? 0 : (2 * precision * recall) / (precision + recall);
+  const scoreVec = yScore ?? yProba ?? yPred;
   return {
     accuracy: n === 0 ? 0 : correct / n,
     precision,
     recall,
     f1,
     logLoss: n === 0 ? 0 : llSum / n,
+    rocAuc: rocAuc(yTrue, scoreVec),
+    prAuc: prAuc(yTrue, scoreVec),
     confusion: [
       [tn, fp],
       [fn, tp],
@@ -169,9 +205,10 @@ export function computeMetrics(
   yTrue: Vector,
   yPred: Vector,
   yProba?: Vector,
+  yScore?: Vector,
 ): Metrics {
   return task === "classification"
-    ? classificationMetrics(yTrue, yPred, yProba)
+    ? classificationMetrics(yTrue, yPred, yProba, yScore)
     : regressionMetrics(yTrue, yPred);
 }
 
@@ -185,7 +222,8 @@ export function formatMetrics(metrics: Metrics, label: string): string[] {
       head,
       `  accuracy ${metrics.accuracy.toFixed(3)}  precision ${metrics.precision.toFixed(3)}`,
       `  recall   ${metrics.recall.toFixed(3)}  f1        ${metrics.f1.toFixed(3)}`,
-      `  logloss  ${metrics.logLoss.toFixed(3)}  (n=${metrics.n})`,
+      `  logloss  ${metrics.logLoss.toFixed(3)}  roc_auc ${metrics.rocAuc.toFixed(3)}  pr_auc ${metrics.prAuc.toFixed(3)}`,
+      `  n=${metrics.n}`,
     ];
   }
   return [

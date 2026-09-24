@@ -182,7 +182,13 @@ export function mount(root: HTMLElement): void {
                           ? "WORLD 9 · STATISTICAL HONESTY"
                           : world === "w10"
                             ? "WORLD 10 · CAPACITY TAX"
-                            : world.toUpperCase();
+                            : world === "w11"
+                              ? "WORLD 11 · INFERENCE"
+                              : world === "w12"
+                                ? "WORLD 12 · METRICS PACK"
+                                : world === "w13"
+                                  ? "WORLD 13 · STRUCTURE & CONTRACTS"
+                                  : world.toUpperCase();
       const head = document.createElement("div");
       head.className = "rail-world";
       head.textContent = label;

@@ -24,6 +24,11 @@ const HELP_LINES = [
   "  encode [onehot|ordinal]  categorical encoding",
   "  impute [mean|median|constant]  missing values from train stats",
   "  poly <degree>            PolynomialFeatures expansion",
+  "  fe interact|bin|target   feature engineering (train-fit)",
+  "  infer                    coefficient SE / z summary",
+  "  importance               tree/forest feature importance",
+  "  sil                      silhouette for clustering",
+  "  nested <model>           nested CV (outer estimate)",
   "  fit <model> [k=v ...]    fit an estimator on train",
   "  predict                  predict the test set",
   "  score [train|test]       compute metrics",
@@ -154,6 +159,23 @@ export function dispatch(
       return session.impute((args[0] ?? "mean") as "mean" | "median" | "constant");
     case "poly":
       return session.poly(Number(args[0] ?? 2));
+    case "fe":
+      return session.fe((args[0] ?? "interact") as "interact" | "bin" | "target");
+    case "infer":
+      return session.infer();
+    case "importance":
+      return session.featureImportance();
+    case "sil":
+    case "silhouette":
+      return session.sil();
+    case "nested":
+      return session.nestedCv(
+        (args[0] ?? "ridge") as ModelName,
+        args[0] === "knn"
+          ? { n_neighbors: [1, 5, 11] }
+          : { alpha: [0.01, 1, 10] },
+        3,
+      );
     case "cv":
       return session.cv(Number(args[0] ?? 5));
     case "curve":
@@ -188,9 +210,10 @@ export function dispatch(
           });
       }
       if (Object.keys(grid).length === 0) {
-        if (name === "ridge" || name === "lasso") grid.alpha = [0.01, 0.1, 1, 10];
+        if (name === "ridge" || name === "lasso" || name === "elasticnet") grid.alpha = [0.01, 0.1, 1, 10];
         else if (name === "knn") grid.n_neighbors = [1, 3, 5, 11];
         else if (name === "tree") grid.max_depth = [1, 2, 3, 5];
+        else if (name === "kmeans") grid.n_clusters = [2, 3, 4];
         else grid.n_neighbors = [3, 5];
       }
       return session.search(name, grid);
