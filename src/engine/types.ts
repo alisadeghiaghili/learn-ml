@@ -5,11 +5,34 @@
  * depending on a real scikit-learn runtime.
  */
 
-export type DatasetName = "blobs" | "moons" | "noisy_line" | "outlier_line" | "scale_trap";
+export type DatasetName =
+  | "blobs"
+  | "moons"
+  | "noisy_line"
+  | "outlier_line"
+  | "scale_trap"
+  | "poly_curve"
+  | "mixed_table"
+  | "clusters"
+  | "dup_features";
 
-export type ModelName = "linear" | "logistic" | "knn" | "ridge" | "dummy";
+export type ModelName =
+  | "linear"
+  | "logistic"
+  | "knn"
+  | "ridge"
+  | "lasso"
+  | "dummy"
+  | "tree"
+  | "forest"
+  | "kmeans"
+  | "pca_knn";
 
 export type ScalerName = "standard" | "minmax";
+
+export type EncoderName = "onehot" | "ordinal";
+
+export type ImputerName = "mean" | "median" | "constant";
 
 export type TaskKind = "classification" | "regression";
 
@@ -64,9 +87,14 @@ export type StepKind =
   | "load"
   | "split"
   | "scale"
+  | "encode"
+  | "impute"
+  | "poly"
   | "fit"
   | "predict"
   | "score"
+  | "search"
+  | "cv"
   | "reset";
 
 export interface PipelineStep {
@@ -119,15 +147,24 @@ export interface SessionSnapshot {
   readonly scaled: ScalerName | null;
   /** True when the scaler was fit on train only (the correct order). */
   readonly scaleLeaked: boolean;
+  readonly encoded: EncoderName | null;
+  readonly imputed: ImputerName | null;
+  readonly polyDegree: number | null;
   readonly model: ModelName | null;
   readonly modelParams: Readonly<Record<string, number | string>>;
   readonly fitted: boolean;
   readonly predictions: Vector | null;
   readonly metrics: Metrics | null;
   readonly trainMetrics: Metrics | null;
+  readonly cvScores: readonly number[] | null;
+  readonly searchBest: Readonly<Record<string, number | string>> | null;
   readonly steps: readonly PipelineStep[];
   readonly commandCount: number;
   readonly scoredOn: "train" | "test" | null;
   /** True after the learner ran `show data` on the current dataset. */
   readonly inspectedData: boolean;
+  /** True when residuals were requested on a regression fit. */
+  readonly inspectedResiduals: boolean;
+  /** True when ROC/threshold was requested on a classification fit. */
+  readonly inspectedRoc: boolean;
 }

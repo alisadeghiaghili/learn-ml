@@ -21,10 +21,17 @@ const HELP_LINES = [
   "  load <dataset>           load a built-in toy dataset",
   "  split test_size=0.2      hold out a test set (do this before scale/fit)",
   "  scale [standard|minmax]  fit a scaler on train only after split",
+  "  encode [onehot|ordinal]  categorical encoding",
+  "  impute [mean|median|constant]  missing values from train stats",
+  "  poly <degree>            PolynomialFeatures expansion",
   "  fit <model> [k=v ...]    fit an estimator on train",
   "  predict                  predict the test set",
   "  score [train|test]       compute metrics",
   "  cm                       confusion matrix (classification)",
+  "  residuals                regression residual diagnostics",
+  "  roc                      threshold / ROC-style sweep",
+  "  cv [folds]               cross_val_score on train",
+  "  search <model> [k=v...]  GridSearchCV-style search on train CV",
   "  show data|pipeline|metrics|code",
   "  goal | hint | levels | run <id> | reset | undo | clear | help",
   "",
@@ -131,6 +138,45 @@ export function dispatch(
         throw new Error("scale accepts `standard` or `minmax`");
       }
       return session.scale(raw as ScalerName);
+    }
+    case "encode":
+      return session.encode((args[0] ?? "onehot") as "onehot" | "ordinal");
+    case "impute":
+      return session.impute((args[0] ?? "mean") as "mean" | "median" | "constant");
+    case "poly":
+      return session.poly(Number(args[0] ?? 2));
+    case "cv":
+      return session.cv(Number(args[0] ?? 5));
+    case "residuals":
+      return session.residuals();
+    case "roc":
+      return session.roc();
+    case "search": {
+      const name = (args[0] ?? "").toLowerCase() as ModelName;
+      if (!MODEL_NAMES.includes(name)) {
+        throw new Error(`search model must be one of ${MODEL_NAMES.join(", ")}`);
+      }
+      // Default tiny grids so `search ridge alpha=0.1,1,10` works.
+      const grid: Record<string, (number | string)[]> = {};
+      for (const tok of args.slice(1)) {
+        const eq = tok.indexOf("=");
+        if (eq <= 0) continue;
+        const key = tok.slice(0, eq);
+        grid[key] = tok
+          .slice(eq + 1)
+          .split(",")
+          .map((v) => {
+            const num = Number(v);
+            return v.trim() !== "" && Number.isFinite(num) && /^-?\d+(\.\d+)?$/.test(v) ? num : v;
+          });
+      }
+      if (Object.keys(grid).length === 0) {
+        if (name === "ridge" || name === "lasso") grid.alpha = [0.01, 0.1, 1, 10];
+        else if (name === "knn") grid.n_neighbors = [1, 3, 5, 11];
+        else if (name === "tree") grid.max_depth = [1, 2, 3, 5];
+        else grid.n_neighbors = [3, 5];
+      }
+      return session.search(name, grid);
     }
     case "fit": {
       const name = (args[0] ?? "").toLowerCase() as ModelName;

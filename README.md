@@ -26,23 +26,34 @@ npm run build
 
 ## Modes
 
-- **Levels** — World 1 (*Fit is not understanding*) has five challenges with
-  honest win checks: X/y, optimization, train/test discipline, overfitting,
-  preprocessing leakage. World 2 (*Metrics lie*) covers baselines, confusion
-  matrices, and the train-vs-test discipline.
+- **Levels** — Seven worlds from fit discipline to unsupervised structure:
+  1. Fit is not understanding
+  2. Metrics lie
+  3. Complexity is a budget (polynomial, residuals, Ridge/Lasso)
+  4. Real tables (impute, one-hot, pipeline order)
+  5. Trees and ensembles
+  6. Model selection (CV and search without leaking test)
+  7. Unsupervised structure (PCA, k-means)
 - **Sandbox** — free play with the same command surface.
 
 ## Command surface
 
 ```text
-load blobs|moons|noisy_line|outlier_line|scale_trap
+load blobs|moons|noisy_line|outlier_line|scale_trap|poly_curve|mixed_table|clusters|dup_features
 show data|pipeline|metrics|code
 split test_size=0.2 seed=42
 scale standard|minmax
-fit linear|logistic|knn|ridge|dummy [params]
+encode onehot|ordinal
+impute mean|median|constant
+poly <degree>
+fit linear|logistic|knn|ridge|lasso|dummy|tree|forest|kmeans|pca_knn [params]
 predict
 score train|test
 cm
+residuals
+roc
+cv [folds]
+search <model> [k=v,...]
 goal | hint | levels | help | undo | reset
 ```
 

@@ -3,7 +3,8 @@
  */
 
 import { colMeans, colMinMax, colStds, scaleShift } from "./matrix";
-import type { Matrix, ScalerName, Vector } from "./types";
+import type { EncoderName, ImputerName, Matrix, ScalerName, Vector } from "./types";
+import { matrix } from "./matrix";
 
 export interface Scaler {
   readonly name: ScalerName;
@@ -71,4 +72,123 @@ export function transform(X: Matrix, scaler: Scaler): Matrix {
  */
 export function scalerLabel(name: ScalerName): string {
   return name === "standard" ? "StandardScaler" : "MinMaxScaler";
+}
+
+/**
+ * Fit a simple imputer (mean/median/constant=0) column-wise.
+ */
+export function fitImputer(
+  X: Matrix,
+  name: ImputerName,
+): { fill: number[]; name: ImputerName } {
+  const fill: number[] = [];
+  for (let j = 0; j < X.nCols; j += 1) {
+    const col = X.data.map((r) => r[j] ?? 0).filter((v) => Number.isFinite(v));
+    if (col.length === 0) {
+      fill.push(0);
+      continue;
+    }
+    if (name === "mean") {
+      fill.push(col.reduce((a, b) => a + b, 0) / col.length);
+    } else if (name === "median") {
+      const sorted = [...col].sort((a, b) => a - b);
+      fill.push(sorted[Math.floor(sorted.length / 2)] ?? 0);
+    } else {
+      fill.push(0);
+    }
+  }
+  return { fill, name };
+}
+
+export function applyImputer(X: Matrix, imp: { fill: number[] }): Matrix {
+  return matrix(
+    X.data.map((row) =>
+      row.map((v, j) => (Number.isFinite(v) ? v : (imp.fill[j] ?? 0))),
+    ),
+  );
+}
+
+/**
+ * One-hot expand a categorical index column (first matching col).
+ * v1 mixed_table uses col 1 as region index 0..3.
+ */
+export function oneHotColumn(X: Matrix, col: number): Matrix {
+  let maxIdx = 0;
+  for (const row of X.data) {
+    maxIdx = Math.max(maxIdx, Math.round(row[col] ?? 0));
+  }
+  const levels = Math.max(1, maxIdx + 1);
+  const rows = X.data.map((row) => {
+    const out: number[] = [];
+    for (let j = 0; j < X.nCols; j += 1) {
+      if (j === col) {
+        for (let k = 0; k < levels; k += 1) {
+          out.push(Math.round(row[j] ?? -1) === k ? 1 : 0);
+        }
+      } else {
+        out.push(row[j] ?? 0);
+      }
+    }
+    return out;
+  });
+  return matrix(rows);
+}
+
+export interface PolyScaler {
+  mid: number;
+  scale: number;
+  degree: number;
+}
+
+/**
+ * Fit the [-1, 1] map for polynomial expansion on training x.
+ */
+export function fitPolyScaler(X: Matrix, degree: number): PolyScaler {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  for (const row of X.data) {
+    const x = row[0] ?? 0;
+    if (Number.isFinite(x)) {
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+    }
+  }
+  if (!Number.isFinite(minX)) {
+    minX = 0;
+    maxX = 1;
+  }
+  return {
+    mid: (maxX + minX) / 2,
+    scale: Math.max(1e-6, (maxX - minX) / 2),
+    degree,
+  };
+}
+
+/**
+ * Polynomial features [x, x^2, ...] for a single column.
+ * Uses a train-fitted scale so test never leaks min/max.
+ */
+export function polyExpand(X: Matrix, scaler: PolyScaler): Matrix {
+  const degree = scaler.degree;
+  if (degree < 1) {
+    throw new Error("poly degree must be >= 1");
+  }
+  return matrix(
+    X.data.map((row) => {
+      const x = ((row[0] ?? 0) - scaler.mid) / scaler.scale;
+      const out: number[] = [];
+      for (let d = 1; d <= degree; d += 1) {
+        out.push(x ** d);
+      }
+      return out;
+    }),
+  );
+}
+
+export function imputerLabel(name: ImputerName): string {
+  return `SimpleImputer(strategy='${name}')`;
+}
+
+export function encoderLabel(name: EncoderName): string {
+  return name === "onehot" ? "OneHotEncoder" : "OrdinalEncoder";
 }

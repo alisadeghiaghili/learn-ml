@@ -165,6 +165,10 @@ const REGISTRY: Record<DatasetName, (seed?: number) => Dataset> = {
   noisy_line: makeNoisyLine,
   outlier_line: makeOutlierLine,
   scale_trap: makeScaleTrap,
+  poly_curve: makePolyCurve,
+  mixed_table: makeMixedTable,
+  clusters: makeClusters,
+  dup_features: makeDupFeatures,
 };
 
 export const DATASET_NAMES = Object.keys(REGISTRY) as DatasetName[];
@@ -195,6 +199,115 @@ export function loadDataset(name: DatasetName, seed?: number): Dataset {
 }
 
 /**
+ * y = 0.4x^3 - 1.2x + 1 + noise — linear fit fails; polynomial fits.
+ */
+function makePolyCurve(seed = 23): Dataset {
+  const rng = makeRng(seed);
+  const rows: number[][] = [];
+  const labels: number[] = [];
+  for (let i = 0; i < 60; i += 1) {
+    const x = -1.6 + (3.2 * i) / 59;
+    rows.push([x]);
+    labels.push(0.4 * x ** 3 - 1.2 * x + 1 + gauss(rng, 0, 0.45));
+  }
+  return {
+    name: "poly_curve",
+    task: "regression",
+    featureNames: ["x"],
+    targetName: "y",
+    X: matrix(rows),
+    y: vector(labels),
+  };
+}
+
+/**
+ * Mixed table: numeric spend + categorical region (+ missing spend).
+ * Target is churn driven mostly by spend and region.
+ */
+function makeMixedTable(seed = 29): Dataset {
+  const rng = makeRng(seed);
+  const rows: number[][] = [];
+  const labels: number[] = [];
+  const regions = ["north", "south", "east", "west"];
+  for (let i = 0; i < 120; i += 1) {
+    const regionIdx = Math.floor(rng() * 4);
+    const region = regions[regionIdx] ?? "north";
+    // Encode region as numeric index 0..3 in column 1 — engine OneHot expands it.
+    let spend = Math.abs(gauss(rng, 40 + regionIdx * 15, 12));
+    if (rng() < 0.12) {
+      spend = Number.NaN;
+    }
+    const loyalty = rng() < 0.35 ? 1 : 0;
+    const risk = (Number.isFinite(spend) ? (100 - spend) / 100 : 0.7) + (regionIdx === 3 ? 0.15 : 0);
+    rows.push([spend, regionIdx, loyalty]);
+    labels.push(risk + gauss(rng, 0, 0.08) > 0.55 ? 1 : 0);
+    void region;
+  }
+  return {
+    name: "mixed_table",
+    task: "classification",
+    featureNames: ["spend", "region", "loyalty"],
+    targetName: "churn",
+    X: matrix(rows),
+    y: vector(labels),
+    classNames: ["stay", "churn"],
+  };
+}
+
+/**
+ * Three Gaussian clusters with two informative dims (for PCA / k-means).
+ */
+function makeClusters(seed = 31): Dataset {
+  const rng = makeRng(seed);
+  const rows: number[][] = [];
+  const labels: number[] = [];
+  const centers = [
+    [0, 0],
+    [4, 1],
+    [1, 4],
+  ];
+  for (let c = 0; c < 3; c += 1) {
+    for (let i = 0; i < 50; i += 1) {
+      const cx = centers[c]?.[0] ?? 0;
+      const cy = centers[c]?.[1] ?? 0;
+      rows.push([cx + gauss(rng, 0, 0.55), cy + gauss(rng, 0, 0.55)]);
+      labels.push(c);
+    }
+  }
+  return {
+    name: "clusters",
+    task: "classification",
+    featureNames: ["x1", "x2"],
+    targetName: "cluster",
+    X: matrix(rows),
+    y: vector(labels),
+    classNames: ["c0", "c1", "c2"],
+  };
+}
+
+/**
+ * Two redundant copies of the same signal — PCA should find rank-1 structure.
+ */
+function makeDupFeatures(seed = 37): Dataset {
+  const rng = makeRng(seed);
+  const rows: number[][] = [];
+  const labels: number[] = [];
+  for (let i = 0; i < 100; i += 1) {
+    const s = gauss(rng, 0, 1);
+    rows.push([s, s + gauss(rng, 0, 0.05), s + gauss(rng, 0, 0.05), gauss(rng, 0, 0.2)]);
+    labels.push(0);
+  }
+  return {
+    name: "dup_features",
+    task: "regression",
+    featureNames: ["a", "a_copy1", "a_copy2", "noise"],
+    targetName: "probe",
+    X: matrix(rows),
+    y: vector(labels),
+  };
+}
+
+/**
  * List datasets with short descriptions for `help` / level copy.
  */
 export function describeDatasets(): { name: DatasetName; task: string; blurb: string }[] {
@@ -204,5 +317,9 @@ export function describeDatasets(): { name: DatasetName; task: string; blurb: st
     { name: "noisy_line", task: "regression", blurb: "y ≈ 2.5x + 1 with noise. Ordinary linear regression." },
     { name: "outlier_line", task: "regression", blurb: "Line plus two outliers. Compare linear vs ridge." },
     { name: "scale_trap", task: "classification", blurb: "Features in different units. Distance models need scaling." },
+    { name: "poly_curve", task: "regression", blurb: "Cubic curve. Linear fails; polynomial + regularization." },
+    { name: "mixed_table", task: "classification", blurb: "Numeric + categorical + missing. Encode and impute." },
+    { name: "clusters", task: "classification", blurb: "Three clusters. PCA and k-means." },
+    { name: "dup_features", task: "regression", blurb: "Copies of one signal. PCA rank / redundancy." },
   ];
 }

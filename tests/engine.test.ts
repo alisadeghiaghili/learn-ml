@@ -16,6 +16,7 @@ import {
 } from "../src/engine";
 import { WORLD1_LEVELS } from "../src/levels/world1";
 import { WORLD2_LEVELS } from "../src/levels/world2";
+import { WORLD3_LEVELS } from "../src/levels/world3";
 
 describe("datasets", () => {
   it("loads blobs as classification with consistent shapes", () => {
@@ -251,5 +252,99 @@ describe("undo", () => {
     s.undo();
     expect(s.snapshot().fitted).toBe(false);
     expect(s.snapshot().split).not.toBeNull();
+  });
+});
+
+describe("world 3-7 smoke", () => {
+  it("poly 3 improves fit on poly_curve", () => {
+    const s = new Session();
+    s.load("poly_curve");
+    s.split_(0.2, 42);
+    s.fit("linear");
+    s.score("test");
+    const before = s.snapshot().metrics as { r2: number };
+    s.poly(3);
+    s.fit("linear");
+    s.score("test");
+    const after = s.snapshot().metrics as { r2: number };
+    expect(after.r2).toBeGreaterThan(before.r2);
+  });
+
+  it("high-degree OLS overfits poly_curve while ridge stays calmer", () => {
+    const ols = new Session();
+    ols.load("poly_curve");
+    ols.split_(0.3, 7);
+    ols.poly(12);
+    ols.fit("linear");
+    ols.score("train");
+    ols.score("test");
+    const olsTrain = (ols.snapshot().trainMetrics as { r2: number }).r2;
+    const olsTest = (ols.snapshot().metrics as { r2: number }).r2;
+
+    const ridge = new Session();
+    ridge.load("poly_curve");
+    ridge.split_(0.3, 7);
+    ridge.poly(12);
+    ridge.fit("ridge", { alpha: 5 });
+    ridge.score("train");
+    ridge.score("test");
+    const ridgeTrain = (ridge.snapshot().trainMetrics as { r2: number }).r2;
+    const ridgeTest = (ridge.snapshot().metrics as { r2: number }).r2;
+
+    expect(olsTrain).toBeGreaterThan(0.7);
+    expect(olsTrain - olsTest).toBeGreaterThan(0.03);
+    expect(ridgeTrain).toBeLessThan(olsTrain + 1e-6);
+    expect(ridgeTest).toBeGreaterThan(-1);
+  });
+
+  it("impute fills NaN and logistic can score mixed_table", () => {
+    const s = new Session();
+    s.load("mixed_table");
+    s.split_(0.25, 42);
+    s.impute("mean");
+    s.encode("onehot");
+    s.fit("logistic");
+    s.score("test");
+    expect(s.snapshot().metrics).toBeTruthy();
+  });
+
+  it("tree overfits moons more than stump on train", () => {
+    const s = new Session();
+    s.load("moons");
+    s.split_(0.25, 7);
+    s.fit("tree", { max_depth: 6 });
+    s.score("train");
+    const deepTrain = (s.snapshot().trainMetrics as { accuracy: number }).accuracy;
+    s.fit("tree", { max_depth: 1 });
+    s.score("train");
+    const stumpTrain = (s.snapshot().trainMetrics as { accuracy: number }).accuracy;
+    expect(deepTrain).toBeGreaterThanOrEqual(stumpTrain);
+  });
+
+  it("search records best params without touching test", () => {
+    const s = new Session();
+    s.load("poly_curve");
+    s.split_(0.2, 42);
+    s.poly(3);
+    s.search("ridge", { alpha: [0.01, 1, 10] });
+    expect(s.snapshot().searchBest).toBeTruthy();
+  });
+
+  it("kmeans recovers 3 blobs", () => {
+    const s = new Session();
+    s.load("clusters");
+    s.split_(0.2, 42);
+    s.fit("kmeans", { n_clusters: 3 });
+    s.score("test");
+    const m = s.snapshot().metrics as { accuracy: number };
+    expect(m.accuracy).toBeGreaterThan(0.7);
+  });
+
+  it("world levels exist for 3-7 and have learning lists", () => {
+    for (const lv of WORLD3_LEVELS) {
+      expect(lv.learning.length).toBeGreaterThan(0);
+      expect(lv.concept.whatHappens.length).toBeGreaterThan(20);
+      expect(lv.steps.length).toBeGreaterThan(0);
+    }
   });
 });

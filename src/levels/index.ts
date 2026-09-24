@@ -5,11 +5,24 @@
 import type { Level } from "../engine/types";
 import { WORLD1_LEVELS } from "./world1";
 import { WORLD2_LEVELS } from "./world2";
+import { WORLD3_LEVELS } from "./world3";
+import { WORLD4_LEVELS } from "./world4";
+import { WORLD5_LEVELS } from "./world5";
+import { WORLD6_LEVELS } from "./world6";
+import { WORLD7_LEVELS } from "./world7";
 
-export const ALL_LEVELS: Level[] = [...WORLD1_LEVELS, ...WORLD2_LEVELS];
+export const ALL_LEVELS: Level[] = [
+  ...WORLD1_LEVELS,
+  ...WORLD2_LEVELS,
+  ...WORLD3_LEVELS,
+  ...WORLD4_LEVELS,
+  ...WORLD5_LEVELS,
+  ...WORLD6_LEVELS,
+  ...WORLD7_LEVELS,
+];
 
 export function findLevel(id: string): Level | undefined {
   return ALL_LEVELS.find((l) => l.id === id);
 }
 
-export { WORLD1_LEVELS, WORLD2_LEVELS };
+export { WORLD1_LEVELS, WORLD2_LEVELS, WORLD3_LEVELS, WORLD4_LEVELS, WORLD5_LEVELS, WORLD6_LEVELS, WORLD7_LEVELS };
