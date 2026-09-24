@@ -176,7 +176,13 @@ export function mount(root: HTMLElement): void {
                     ? "WORLD 6 · MODEL SELECTION"
                     : world === "w7"
                       ? "WORLD 7 · UNSUPERVISED STRUCTURE"
-                      : world.toUpperCase();
+                      : world === "w8"
+                        ? "WORLD 8 · HONEST SELECTION"
+                        : world === "w9"
+                          ? "WORLD 9 · STATISTICAL HONESTY"
+                          : world === "w10"
+                            ? "WORLD 10 · CAPACITY TAX"
+                            : world.toUpperCase();
       const head = document.createElement("div");
       head.className = "rail-world";
       head.textContent = label;

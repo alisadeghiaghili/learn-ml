@@ -26,7 +26,7 @@ npm run build
 
 ## Modes
 
-- **Levels** — Seven worlds from fit discipline to unsupervised structure:
+- **Levels** — Ten worlds from fit discipline to shippable claims:
   1. Fit is not understanding
   2. Metrics lie
   3. Complexity is a budget (polynomial, residuals, Ridge/Lasso)
@@ -34,6 +34,9 @@ npm run build
   5. Trees and ensembles
   6. Model selection (CV and search without leaking test)
   7. Unsupervised structure (PCA, k-means)
+  8. Honest selection (learning curves, nested roles, Pipeline/joblib)
+  9. Statistical honesty (bootstrap CI, log-loss, stratified/time splits)
+  10. Capacity tax (boosting, temporal leakage, end-to-end claim)
 - **Sandbox** — free play with the same command surface.
 
 ## Command surface
@@ -41,18 +44,22 @@ npm run build
 ```text
 load blobs|moons|noisy_line|outlier_line|scale_trap|poly_curve|mixed_table|clusters|dup_features
 show data|pipeline|metrics|code
-split test_size=0.2 seed=42
+split test_size=0.2 seed=42 strategy=random|stratified|time
 scale standard|minmax
 encode onehot|ordinal
 impute mean|median|constant
 poly <degree>
-fit linear|logistic|knn|ridge|lasso|dummy|tree|forest|kmeans|pca_knn [params]
+fit linear|logistic|knn|ridge|lasso|dummy|tree|forest|boost|kmeans|pca_knn [params]
 predict
 score train|test
 cm
 residuals
 roc
 cv [folds]
+curve [steps]
+bootstrap [reps]
+pipeline
+save
 search <model> [k=v,...]
 goal | hint | levels | help | undo | reset
 ```

@@ -25,6 +25,7 @@ export type ModelName =
   | "dummy"
   | "tree"
   | "forest"
+  | "boost"
   | "kmeans"
   | "pca_knn";
 
@@ -70,6 +71,7 @@ export interface ClassificationMetrics {
   readonly precision: number;
   readonly recall: number;
   readonly f1: number;
+  readonly logLoss: number;
   readonly confusion: readonly (readonly number[])[];
   readonly n: number;
 }
@@ -95,6 +97,9 @@ export type StepKind =
   | "score"
   | "search"
   | "cv"
+  | "curve"
+  | "pipeline"
+  | "boost"
   | "reset";
 
 export interface PipelineStep {
@@ -158,6 +163,10 @@ export interface SessionSnapshot {
   readonly trainMetrics: Metrics | null;
   readonly cvScores: readonly number[] | null;
   readonly searchBest: Readonly<Record<string, number | string>> | null;
+  readonly learningCurve: readonly { train: number; valid: number; n: number }[] | null;
+  readonly bootstrapCi: readonly [number, number] | null;
+  readonly pipelineSaved: boolean;
+  readonly splitStrategy: "random" | "stratified" | "time" | null;
   readonly steps: readonly PipelineStep[];
   readonly commandCount: number;
   readonly scoredOn: "train" | "test" | null;

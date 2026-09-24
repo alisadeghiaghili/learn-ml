@@ -2,7 +2,7 @@
  * Session state machine: the sandbox workspace a level or free play runs in.
  */
 
-import { loadDataset } from "./datasets";
+import { loadDataset, makeRng } from "./datasets";
 import {
   fitModel,
   modelSklearnName,
@@ -10,6 +10,7 @@ import {
   type FittedModel,
   type ModelParams,
 } from "./estimators";
+import { matrix, take, takeRows, vector } from "./matrix";
 import { computeMetrics, trainTestSplit, formatMetrics } from "./metrics";
 import {
   applyImputer,
@@ -60,6 +61,10 @@ interface SessionState {
   trainMetrics: Metrics | null;
   cvScores: number[] | null;
   searchBest: Record<string, number | string> | null;
+  learningCurve: { train: number; valid: number; n: number }[] | null;
+  bootstrapCi: [number, number] | null;
+  pipelineSaved: boolean;
+  splitStrategy: "random" | "stratified" | "time" | null;
   scoredOn: "train" | "test" | null;
   steps: PipelineStep[];
   commandCount: number;
@@ -83,6 +88,10 @@ export class Session {
   private trainMetrics: Metrics | null = null;
   private cvScores: number[] | null = null;
   private searchBest: Record<string, number | string> | null = null;
+  private learningCurve: { train: number; valid: number; n: number }[] | null = null;
+  private bootstrapCi: [number, number] | null = null;
+  private pipelineSaved = false;
+  private splitStrategy: "random" | "stratified" | "time" | null = null;
   private scoredOn: "train" | "test" | null = null;
   private steps: PipelineStep[] = [];
   private commandCount = 0;
@@ -108,6 +117,10 @@ export class Session {
       trainMetrics: this.trainMetrics,
       cvScores: this.cvScores ? [...this.cvScores] : null,
       searchBest: this.searchBest ? { ...this.searchBest } : null,
+      learningCurve: this.learningCurve ? this.learningCurve.map((r) => ({ ...r })) : null,
+      bootstrapCi: this.bootstrapCi ? ([...this.bootstrapCi] as [number, number]) : null,
+      pipelineSaved: this.pipelineSaved,
+      splitStrategy: this.splitStrategy,
       steps: [...this.steps],
       commandCount: this.commandCount,
       scoredOn: this.scoredOn,
@@ -177,6 +190,10 @@ export class Session {
       trainMetrics: this.trainMetrics,
       cvScores: this.cvScores,
       searchBest: this.searchBest,
+      learningCurve: this.learningCurve,
+      bootstrapCi: this.bootstrapCi,
+      pipelineSaved: this.pipelineSaved,
+      splitStrategy: this.splitStrategy,
       scoredOn: this.scoredOn,
       steps: [...this.steps],
       commandCount: this.commandCount,
@@ -201,6 +218,10 @@ export class Session {
     this.trainMetrics = state.trainMetrics;
     this.cvScores = state.cvScores;
     this.searchBest = state.searchBest;
+    this.learningCurve = state.learningCurve;
+    this.bootstrapCi = state.bootstrapCi;
+    this.pipelineSaved = state.pipelineSaved;
+    this.splitStrategy = state.splitStrategy;
     this.scoredOn = state.scoredOn;
     this.steps = [...state.steps];
     this.commandCount = state.commandCount;
@@ -245,6 +266,10 @@ export class Session {
     this.polyDegree = null;
     this.cvScores = null;
     this.searchBest = null;
+    this.learningCurve = null;
+    this.bootstrapCi = null;
+    this.pipelineSaved = false;
+    this.splitStrategy = null;
     this.inspectedResiduals = false;
     this.inspectedRoc = false;
     this.steps = [
@@ -269,13 +294,62 @@ export class Session {
     };
   }
 
-  split_(testSize = 0.2, seed = 42): CommandResult {
+  split_(testSize = 0.2, seed = 42, strategy: "random" | "stratified" | "time" = "random"): CommandResult {
     this.pushHistory();
     const ds = this.requireDataset();
     if (this.scalePhase === "before_split") {
       this.scaleLeaked = true;
     }
-    this.split = trainTestSplit(ds.X, ds.y, testSize, seed);
+    let split = trainTestSplit(ds.X, ds.y, testSize, seed);
+    if (strategy === "time") {
+      // Contiguous hold-out at the end — simulates temporal generalization.
+      const n = ds.X.nRows;
+      const nTest = Math.max(1, Math.round(n * testSize));
+      const trainIdx = Array.from({ length: n - nTest }, (_, i) => i);
+      const testIdx = Array.from({ length: nTest }, (_, i) => n - nTest + i);
+      split = {
+        XTrain: takeRows(ds.X, trainIdx),
+        XTest: takeRows(ds.X, testIdx),
+        yTrain: take(ds.y, trainIdx),
+        yTest: take(ds.y, testIdx),
+        testSize,
+        seed,
+      };
+    } else if (strategy === "stratified") {
+      // Approximate stratify: keep class ratio by splitting each class.
+      const idx0: number[] = [];
+      const idx1: number[] = [];
+      ds.y.data.forEach((v, i) => {
+        if ((v ?? 0) >= 0.5) idx1.push(i);
+        else idx0.push(i);
+      });
+      const rng = makeRng(seed);
+      const shuffle = (a: number[]) => {
+        for (let i = a.length - 1; i > 0; i -= 1) {
+          const j = Math.floor(rng() * (i + 1));
+          const t = a[i] ?? 0;
+          a[i] = a[j] ?? 0;
+          a[j] = t;
+        }
+        return a;
+      };
+      shuffle(idx0);
+      shuffle(idx1);
+      const nTest0 = Math.max(1, Math.round(idx0.length * testSize));
+      const nTest1 = Math.max(1, Math.round(idx1.length * testSize));
+      const testIdx = [...idx0.slice(0, nTest0), ...idx1.slice(0, nTest1)];
+      const trainIdx = [...idx0.slice(nTest0), ...idx1.slice(nTest1)];
+      split = {
+        XTrain: takeRows(ds.X, trainIdx),
+        XTest: takeRows(ds.X, testIdx),
+        yTrain: take(ds.y, trainIdx),
+        yTest: take(ds.y, testIdx),
+        testSize,
+        seed,
+      };
+    }
+    this.split = split;
+    this.splitStrategy = strategy;
     this.model = null;
     this.predictions = null;
     this.metrics = null;
@@ -283,8 +357,13 @@ export class Session {
     this.scoredOn = null;
     this.addStep({
       kind: "split",
-      label: `split test=${testSize}`,
-      sklearn: `train_test_split(X, y, test_size=${testSize}, random_state=${seed})`,
+      label: `split test=${testSize} ${strategy}`,
+      sklearn:
+        strategy === "time"
+          ? `# temporal hold-out: train = rows[: -n_test]`
+          : strategy === "stratified"
+            ? `train_test_split(X, y, test_size=${testSize}, stratify=y)`
+            : `train_test_split(X, y, test_size=${testSize}, random_state=${seed})`,
       status: this.scaleLeaked ? "error" : "ok",
       detail: this.scaleLeaked
         ? "Scaler was fit on all rows — test information leaked into preprocessing."
@@ -419,7 +498,12 @@ export class Session {
     const X = this.designMatrix(on === "test" ? this.split.XTest : this.split.XTrain);
     const y = on === "test" ? this.split.yTest : this.split.yTrain;
     const pred = this.model.predict(X);
-    const metrics = computeMetrics(ds.task, y, pred);
+    let proba: Vector | undefined;
+    if (ds.task === "classification") {
+      const dec = this.model.decision(X);
+      proba = vector(dec.data.map((z) => (z > 0 && z <= 1 ? z : 1 / (1 + Math.exp(-z)))));
+    }
+    const metrics = computeMetrics(ds.task, y, pred, proba);
     if (on === "test") {
       this.metrics = metrics;
       this.scoredOn = "test";
@@ -729,6 +813,158 @@ export class Session {
     };
   }
 
+  /** Learning curve: train vs validation score as n grows. */
+  curve(fractions = 5): CommandResult {
+    this.pushHistory();
+    const ds = this.requireDataset();
+    if (!this.split || !this.model) {
+      throw new Error("Fit a model on a split first, then `curve`.");
+    }
+    const X = this.designMatrix(this.split.XTrain);
+    const y = this.split.yTrain;
+    const n = X.nRows;
+    const steps = Math.max(2, fractions);
+    const rows: { train: number; valid: number; n: number }[] = [];
+    for (let s = 1; s <= steps; s += 1) {
+      const nUse = Math.max(4, Math.floor((n * s) / steps));
+      const idx = Array.from({ length: nUse }, (_, i) => i);
+      const cut = Math.floor(nUse * 0.75);
+      const tr = idx.slice(0, cut);
+      const va = idx.slice(cut);
+      const Xtr = matrix(tr.map((i) => [...(X.data[i] ?? [])]));
+      const ytr = vector(tr.map((i) => y.data[i] ?? 0));
+      const Xva = matrix(va.map((i) => [...(X.data[i] ?? [])]));
+      const yva = vector(va.map((i) => y.data[i] ?? 0));
+      try {
+        const m = fitModel(this.model.name, Xtr, ytr, this.model.params);
+        const trM = computeMetrics(ds.task, ytr, m.predict(Xtr));
+        const vaM = computeMetrics(ds.task, yva, m.predict(Xva));
+        rows.push({
+          train: "accuracy" in trM ? trM.accuracy : trM.r2,
+          valid: "accuracy" in vaM ? vaM.accuracy : vaM.r2,
+          n: nUse,
+        });
+      } catch {
+        rows.push({ train: 0, valid: 0, n: nUse });
+      }
+    }
+    this.learningCurve = rows;
+    this.addStep({
+      kind: "curve",
+      label: `learning_curve(${steps})`,
+      sklearn: `learning_curve(model, X_train, y_train, train_sizes=...)`,
+      status: "ok",
+    });
+    this.commandCount += 1;
+    return {
+      lines: [
+        "learning curve (train vs holdout-in-train):",
+        ...rows.map(
+          (r) => `  n=${String(r.n).padStart(3)}  train=${r.train.toFixed(3)}  valid=${r.valid.toFixed(3)}`,
+        ),
+        "Gap high → variance (more data / simpler model). Both low → bias (richer model).",
+      ],
+      sklearn: "learning_curve(model, X_train, y_train)",
+      status: "ok",
+      snapshot: this.snapshot(),
+    };
+  }
+
+  /** Bootstrap CI for a scalar score (test accuracy or r2). */
+  bootstrap(reps = 200): CommandResult {
+    this.pushHistory();
+    const ds = this.requireDataset();
+    if (!this.model || !this.split) {
+      throw new Error("Fit a model and score before bootstrap.");
+    }
+    const X = this.designMatrix(this.split.XTest);
+    const y = this.split.yTest;
+    const pred = this.model.predict(X);
+    const rng = makeRng(42);
+    const scores: number[] = [];
+    for (let b = 0; b < reps; b += 1) {
+      const idx = Array.from({ length: X.nRows }, () => Math.floor(rng() * X.nRows));
+      const yb = vector(idx.map((i) => y.data[i] ?? 0));
+      const pb = vector(idx.map((i) => pred.data[i] ?? 0));
+      const met = computeMetrics(ds.task, yb, pb);
+      scores.push("accuracy" in met ? met.accuracy : met.r2);
+    }
+    scores.sort((a, b) => a - b);
+    const lo = scores[Math.floor(reps * 0.025)] ?? 0;
+    const hi = scores[Math.floor(reps * 0.975)] ?? 1;
+    this.bootstrapCi = [lo, hi];
+    this.addStep({
+      kind: "score",
+      label: `bootstrap_${reps}`,
+      sklearn: `# bootstrap resample test metrics  (or scipy.stats.bootstrap)`,
+      status: "ok",
+    });
+    this.commandCount += 1;
+    return {
+      lines: [`bootstrap 95% CI: [${lo.toFixed(3)}, ${hi.toFixed(3)}]  reps=${reps}`, "A point estimate without an interval is a rumor."],
+      sklearn: "# bootstrap CI around test score",
+      status: "ok",
+      snapshot: this.snapshot(),
+    };
+  }
+
+  /** Persist fitted Pipeline (joblib semantics — local object registry). */
+  savePipeline(): CommandResult {
+    this.pushHistory();
+    if (!this.model) {
+      throw new Error("Fit a model first — a Pipeline saves transforms + estimator.");
+    }
+    this.pipelineSaved = true;
+    this.addStep({
+      kind: "pipeline",
+      label: "Pipeline.save",
+      sklearn: "import joblib\njoblib.dump(pipeline, 'model.joblib')",
+      status: "ok",
+    });
+    this.commandCount += 1;
+    return {
+      lines: [
+        "Pipeline (imputer → encoder → scaler → model) saved as model.joblib",
+        "Deploy the pipeline, never a bare estimator with silent preprocessing.",
+      ],
+      sklearn: "joblib.dump(pipeline, 'model.joblib')",
+      status: "ok",
+      snapshot: this.snapshot(),
+    };
+  }
+
+  /** Show sklearn Pipeline construction (syntax lesson). */
+  pipelineCode(): CommandResult {
+    this.pushHistory();
+    this.addStep({
+      kind: "pipeline",
+      label: "Pipeline.compose",
+      sklearn: "from sklearn.pipeline import Pipeline",
+      status: "ok",
+    });
+    this.commandCount += 1;
+    return {
+      lines: [
+        "from sklearn.compose import ColumnTransformer",
+        "from sklearn.pipeline import Pipeline",
+        "from sklearn.impute import SimpleImputer",
+        "from sklearn.preprocessing import OneHotEncoder, StandardScaler",
+        "",
+        "prep = ColumnTransformer([",
+        "  ('num', Pipeline([('imp', SimpleImputer()), ('sc', StandardScaler())]), numeric_cols),",
+        "  ('cat', Pipeline([('imp', SimpleImputer(strategy='most_frequent')),",
+        "                   ('oh', OneHotEncoder(handle_unknown='ignore'))]), cat_cols),",
+        "])",
+        "pipe = Pipeline([('prep', prep), ('model', LogisticRegression())])",
+        "pipe.fit(X_train, y_train)",
+        "joblib.dump(pipe, 'model.joblib')",
+      ],
+      sklearn: "Pipeline([('prep', prep), ('model', clf)]).fit(X_train, y_train)",
+      status: "ok",
+      snapshot: this.snapshot(),
+    };
+  }
+
   reset(): CommandResult {
     this.pushHistory();
     this.dataset = null;
@@ -751,6 +987,10 @@ export class Session {
     this.polyScaler = null;
     this.cvScores = null;
     this.searchBest = null;
+    this.learningCurve = null;
+    this.bootstrapCi = null;
+    this.pipelineSaved = false;
+    this.splitStrategy = null;
     this.inspectedResiduals = false;
     this.inspectedRoc = false;
     return {

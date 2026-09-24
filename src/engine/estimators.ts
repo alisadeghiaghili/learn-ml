@@ -495,6 +495,48 @@ export function fitForest(X: Matrix, y: Vector, params: ModelParams = {}): Fitte
   };
 }
 
+export function fitBoost(X: Matrix, y: Vector, params: ModelParams = {}): FittedModel {
+  const nEst = Math.max(1, Math.round(Number(params.n_estimators ?? 20)));
+  const maxDepth = Math.max(1, Math.round(Number(params.max_depth ?? 2)));
+  const lr = Number(params.lr ?? 0.3);
+  const n = X.nRows;
+  // Binary Gradient Boosting on logistic loss via residual trees (simplified).
+  let raw = Array<number>(n).fill(0);
+  const stumps: TreeNode[] = [];
+  for (let m = 0; m < nEst; m += 1) {
+    const prob = raw.map((z) => 1 / (1 + Math.exp(-z)));
+    const r = y.data.map((yi, i) => ((yi ?? 0) >= 0.5 ? 1 : 0) - (prob[i] ?? 0.5));
+    const yVec = vector(r.map((v) => v + 0.5));
+    const idx = Array.from({ length: n }, (_, i) => i);
+    const tree = buildTree(X, yVec, idx, 0, maxDepth, 2);
+    stumps.push(tree);
+    const leafVals = X.data.map((row) => treePredict(tree, row));
+    for (let i = 0; i < n; i += 1) {
+      raw[i] = (raw[i] ?? 0) + lr * ((leafVals[i] ?? 0) - 0.5) * 2;
+    }
+  }
+  const decision = (Xs: Matrix): Vector =>
+    vector(
+      Xs.data.map((row) => {
+        let z = 0;
+        for (let m = 0; m < stumps.length; m += 1) {
+          z += lr * (treePredict(stumps[m] ?? { leaf: true, value: 0 }, row) - 0.5) * 2;
+        }
+        return z;
+      }),
+    );
+  const predict = (Xs: Matrix): Vector =>
+    vector(decision(Xs).data.map((z) => (z >= 0 ? 1 : 0)));
+  return {
+    name: "boost",
+    task: "classification",
+    params: { ...params, n_estimators: nEst, max_depth: maxDepth, lr },
+    predict,
+    decision,
+    trainN: X.nRows,
+  };
+}
+
 export function fitKmeans(X: Matrix, _y: Vector, params: ModelParams = {}): FittedModel {
   const k = Math.max(1, Math.round(Number(params.n_clusters ?? 3)));
   const seed = Number(params.seed ?? 42);
@@ -640,6 +682,7 @@ const SKLEARN_NAME: Record<ModelName, string> = {
   dummy: "DummyRegressor",
   tree: "DecisionTreeClassifier",
   forest: "RandomForestClassifier",
+  boost: "GradientBoostingClassifier",
   kmeans: "KMeans",
   pca_knn: "PCA+KNeighborsClassifier",
 };
@@ -688,6 +731,8 @@ export function fitModel(
       return fitTree(X, y, params);
     case "forest":
       return fitForest(X, y, params);
+    case "boost":
+      return fitBoost(X, y, params);
     case "kmeans":
       return fitKmeans(X, y, params);
     case "pca_knn":
@@ -714,6 +759,8 @@ export function defaultParams(name: ModelName): ModelParams {
       return { max_depth: 3 };
     case "forest":
       return { n_estimators: 11, max_depth: 4 };
+    case "boost":
+      return { n_estimators: 20, max_depth: 2, lr: 0.3 };
     case "kmeans":
       return { n_clusters: 3 };
     case "pca_knn":

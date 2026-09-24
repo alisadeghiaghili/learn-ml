@@ -31,7 +31,12 @@ const HELP_LINES = [
   "  residuals                regression residual diagnostics",
   "  roc                      threshold / ROC-style sweep",
   "  cv [folds]               cross_val_score on train",
+  "  curve [steps]            learning_curve train vs valid",
+  "  bootstrap [reps]         95% CI around test score",
+  "  pipeline                 sklearn Pipeline composition lesson",
+  "  save                     joblib.dump(pipeline)",
   "  search <model> [k=v...]  GridSearchCV-style search on train CV",
+  "  split ... strategy=stratified|time",
   "  show data|pipeline|metrics|code",
   "  goal | hint | levels | run <id> | reset | undo | clear | help",
   "",
@@ -130,7 +135,11 @@ export function dispatch(
       const kw = parseKwargs(args);
       const testSize = Number(kw.test_size ?? 0.2);
       const seed = Number(kw.seed ?? kw.random_state ?? 42);
-      return session.split_(testSize, seed);
+      const strategy = String(kw.strategy ?? "random") as "random" | "stratified" | "time";
+      if (!["random", "stratified", "time"].includes(strategy)) {
+        throw new Error("strategy must be random|stratified|time");
+      }
+      return session.split_(testSize, seed, strategy);
     }
     case "scale": {
       const raw = (args[0] ?? "standard").toLowerCase();
@@ -147,6 +156,14 @@ export function dispatch(
       return session.poly(Number(args[0] ?? 2));
     case "cv":
       return session.cv(Number(args[0] ?? 5));
+    case "curve":
+      return session.curve(Number(args[0] ?? 5));
+    case "bootstrap":
+      return session.bootstrap(Number(args[0] ?? 200));
+    case "pipeline":
+      return session.pipelineCode();
+    case "save":
+      return session.savePipeline();
     case "residuals":
       return session.residuals();
     case "roc":

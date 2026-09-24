@@ -68,22 +68,28 @@ export function trainTestSplit(
 }
 
 /**
- * Classification metrics for binary labels {0, 1}.
+ * Classification metrics for binary labels {0, 1}, including log-loss.
  *
  * Args:
  *   yTrue: Ground-truth labels.
- *   yPred: Predicted labels.
+ *   yPred: Predicted labels (hard 0/1).
+ *   yProba: Optional positive-class probabilities for log-loss.
  *
  * Returns:
- *   Accuracy, precision, recall, F1, and a 2x2 confusion matrix [[TN, FP], [FN, TP]].
+ *   Accuracy, precision, recall, F1, log-loss, and 2x2 confusion [[TN, FP], [FN, TP]].
  */
-export function classificationMetrics(yTrue: Vector, yPred: Vector): ClassificationMetrics {
+export function classificationMetrics(
+  yTrue: Vector,
+  yPred: Vector,
+  yProba?: Vector,
+): ClassificationMetrics {
   let tp = 0;
   let fp = 0;
   let tn = 0;
   let fn = 0;
   let correct = 0;
   const n = yTrue.data.length;
+  let llSum = 0;
   for (let i = 0; i < n; i += 1) {
     const t = (yTrue.data[i] ?? 0) >= 0.5 ? 1 : 0;
     const p = (yPred.data[i] ?? 0) >= 0.5 ? 1 : 0;
@@ -99,6 +105,9 @@ export function classificationMetrics(yTrue: Vector, yPred: Vector): Classificat
     } else {
       fn += 1;
     }
+    const prob = yProba?.data[i] ?? (p === 1 ? 0.9 : 0.1);
+    const clamped = Math.min(1 - 1e-6, Math.max(1e-6, prob));
+    llSum += t === 1 ? -Math.log(clamped) : -Math.log(1 - clamped);
   }
   const precision = tp + fp === 0 ? 0 : tp / (tp + fp);
   const recall = tp + fn === 0 ? 0 : tp / (tp + fn);
@@ -108,6 +117,7 @@ export function classificationMetrics(yTrue: Vector, yPred: Vector): Classificat
     precision,
     recall,
     f1,
+    logLoss: n === 0 ? 0 : llSum / n,
     confusion: [
       [tn, fp],
       [fn, tp],
@@ -158,9 +168,10 @@ export function computeMetrics(
   task: TaskKind,
   yTrue: Vector,
   yPred: Vector,
+  yProba?: Vector,
 ): Metrics {
   return task === "classification"
-    ? classificationMetrics(yTrue, yPred)
+    ? classificationMetrics(yTrue, yPred, yProba)
     : regressionMetrics(yTrue, yPred);
 }
 
@@ -173,7 +184,8 @@ export function formatMetrics(metrics: Metrics, label: string): string[] {
     return [
       head,
       `  accuracy ${metrics.accuracy.toFixed(3)}  precision ${metrics.precision.toFixed(3)}`,
-      `  recall   ${metrics.recall.toFixed(3)}  f1        ${metrics.f1.toFixed(3)}  (n=${metrics.n})`,
+      `  recall   ${metrics.recall.toFixed(3)}  f1        ${metrics.f1.toFixed(3)}`,
+      `  logloss  ${metrics.logLoss.toFixed(3)}  (n=${metrics.n})`,
     ];
   }
   return [

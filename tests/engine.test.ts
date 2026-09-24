@@ -347,4 +347,32 @@ describe("world 3-7 smoke", () => {
       expect(lv.steps.length).toBeGreaterThan(0);
     }
   });
+
+  it("learning curve, bootstrap, boost, time split work", () => {
+    const s = new Session();
+    s.load("poly_curve");
+    s.split_(0.2, 42);
+    s.poly(3);
+    s.fit("ridge", { alpha: 1 });
+    s.curve(4);
+    expect(s.snapshot().learningCurve?.length).toBeGreaterThanOrEqual(3);
+    s.score("test");
+    s.bootstrap(50);
+    expect(s.snapshot().bootstrapCi).toBeTruthy();
+
+    const b = new Session();
+    b.load("moons");
+    b.split_(0.25, 7);
+    b.fit("boost", { n_estimators: 15, max_depth: 2, lr: 0.3 });
+    b.score("test");
+    expect(b.snapshot().metrics).toBeTruthy();
+
+    const t = new Session();
+    t.load("noisy_line");
+    t.split_(0.3, 1, "time");
+    expect(t.snapshot().splitStrategy).toBe("time");
+    t.fit("linear");
+    t.score("test");
+    expect(t.snapshot().scoredOn).toBe("test");
+  });
 });
