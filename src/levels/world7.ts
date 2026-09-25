@@ -78,12 +78,12 @@ export const WORLD7_LEVELS: Level[] = [
           "Unsupervised methods still have failure modes and hyperparameters. Treating k-means output as truth is how segments get executive names and no validation.",
         callout: "A cluster is a hypothesis with coordinates.",
       },
-    goal: "On clusters: fit kmeans n_clusters=3 and score test against the 3-class labels (acc ≥ 0.8).",
+    goal: "On clusters: fit kmeans n_clusters=3 and run `sil` (score ≥ 0.4). Do not trust raw accuracy vs labels — cluster ids are arbitrary.",
     hints: [
-      "`load clusters` → `split` → `fit kmeans n_clusters=3` → `score test`",
-      "Use k=2 first to see a worse score — then k=3.",
+      "`load clusters` → `split` → `fit kmeans n_clusters=3` → `sil`",
+      "If you `score test`, labels may not match cluster ids 1:1 — use silhouette instead.",
     ],
-    learning: ["Lloyd's algorithm", "k as a prior", "validation of unsupervised output"],
+    learning: ["Lloyd's algorithm", "k as a prior", "cluster ids vs class labels", "validation of unsupervised output"],
     seedDataset: "clusters",
     steps: [
       {
@@ -95,22 +95,19 @@ export const WORLD7_LEVELS: Level[] = [
       },
       {
         id: "score",
-        label: "Score test acc ≥ 0.8",
-        detail: "Labels exist here as a rare gift.",
-        command: "score test",
-        check: (s) =>
-          isClass(s.metrics) &&
-          s.scoredOn === "test" &&
-          s.metrics.accuracy >= 0.8,
+        label: "Silhouette ≥ 0.4",
+        detail: "Cohesion vs separation.",
+        command: "sil",
+        check: (s) => s.silhouette !== null && s.silhouette >= 0.4,
       },
     ],
     win: (s) => {
       if (s.model !== "kmeans") return fail("Fit `kmeans n_clusters=3`.");
-      if (!isClass(s.metrics) || s.scoredOn !== "test") return fail("`score test`.");
-      if (s.metrics.accuracy < 0.8) {
-        return fail(`Accuracy ${s.metrics.accuracy.toFixed(3)} < 0.80. Check k=3 and scaling if needed.`);
+      if (s.silhouette === null) return fail("Run `sil` — accuracy against class ids is the wrong metric here.");
+      if (s.silhouette < 0.4) {
+        return fail(`Silhouette ${s.silhouette.toFixed(3)} < 0.40. Check k=3 and feature scale.`);
       }
-      return win("Geometry recovered. Naming those clusters is a separate, riskier job.");
+      return win("Geometry recovered and validated. Naming those clusters is a separate, riskier job.");
     },
   },
   {

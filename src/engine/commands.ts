@@ -26,6 +26,8 @@ const HELP_LINES = [
   "  poly <degree>            PolynomialFeatures expansion",
   "  fe interact|bin|target   feature engineering (train-fit)",
   "  infer                    coefficient SE / z summary",
+  "  calib                    reliability / calibration bins",
+  "  predci                   prediction intervals (regression)",
   "  importance               tree/forest feature importance",
   "  sil                      silhouette for clustering",
   "  nested <model>           nested CV (outer estimate)",
@@ -163,6 +165,11 @@ export function dispatch(
       return session.fe((args[0] ?? "interact") as "interact" | "bin" | "target");
     case "infer":
       return session.infer();
+    case "calib":
+      return session.calib();
+    case "predci":
+    case "predinterval":
+      return session.predInterval();
     case "importance":
       return session.featureImportance();
     case "sil":

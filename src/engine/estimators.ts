@@ -394,6 +394,45 @@ export function fitElasticNet(X: Matrix, y: Vector, params: ModelParams = {}): F
   };
 }
 
+/**
+ * One-vs-rest logistic for K labels {0..K-1}.
+ */
+export function fitOvrLogistic(X: Matrix, y: Vector, params: ModelParams = {}): FittedModel {
+  const classes = [...new Set(y.data.map((v) => Math.round(v)))].sort((a, b) => a - b);
+  const k = Math.max(2, classes.length);
+  const binModels = classes.map((cls) => {
+    const yb = vector(y.data.map((v) => (Math.round(v) === cls ? 1 : 0)));
+    return fitLogistic(X, yb, params);
+  });
+  const decision = (Xs: Matrix): Vector => {
+    // return argmax decision as integer label
+    return vector(
+      Xs.data.map((row) => {
+        const single = matrix([row]);
+        let best = 0;
+        let bestZ = -Infinity;
+        binModels.forEach((m, ci) => {
+          const z = m.decision(single).data[0] ?? -Infinity;
+          if (z > bestZ) {
+            bestZ = z;
+            best = ci;
+          }
+        });
+        return classes[best] ?? 0;
+      }),
+    );
+  };
+  const predict = decision;
+  return {
+    name: "ovr_logistic",
+    task: "classification",
+    params: { ...params, n_classes: k },
+    predict,
+    decision,
+    trainN: X.nRows,
+  };
+}
+
 export function fitDbscan(X: Matrix, _y: Vector, params: ModelParams = {}): FittedModel {
   const eps = Number(params.eps ?? 0.8);
   const minPts = Number(params.min_samples ?? 4);
@@ -658,10 +697,29 @@ export function fitKmeans(X: Matrix, _y: Vector, params: ModelParams = {}): Fitt
   const seed = Number(params.seed ?? 42);
   const rng = makeRng(seed);
   const p = X.nCols;
-  let centers = Array.from({ length: k }, () =>
-    Array.from({ length: p }, () => (rng() - 0.5) * 4),
-  );
-  for (let iter = 0; iter < 30; iter += 1) {
+  // k-means++ style: first center random, others spread by distance.
+  const centers: number[][] = [];
+  const first = X.data[Math.floor(rng() * X.nRows)] ?? Array<number>(p).fill(0);
+  centers.push([...first]);
+  while (centers.length < k) {
+    let bestIdx = 0;
+    let bestD = -1;
+    for (let i = 0; i < X.nRows; i += 1) {
+      const row = X.data[i] ?? [];
+      let minD = Infinity;
+      for (const c of centers) {
+        let d = 0;
+        for (let j = 0; j < p; j += 1) d += ((row[j] ?? 0) - (c[j] ?? 0)) ** 2;
+        minD = Math.min(minD, d);
+      }
+      if (minD > bestD) {
+        bestD = minD;
+        bestIdx = i;
+      }
+    }
+    centers.push([...(X.data[bestIdx] ?? Array<number>(p).fill(0))]);
+  }
+  for (let iter = 0; iter < 50; iter += 1) {
     const sums = Array.from({ length: k }, () => Array<number>(p).fill(0));
     const counts = Array<number>(k).fill(0);
     for (const row of X.data) {
@@ -682,9 +740,12 @@ export function fitKmeans(X: Matrix, _y: Vector, params: ModelParams = {}): Fitt
         sums[bestC]![j] = (sums[bestC]![j] ?? 0) + (row[j] ?? 0);
       }
     }
-    centers = sums.map((s, c) =>
-      s.map((v) => (counts[c] ? v / (counts[c] ?? 1) : 0)),
-    );
+    for (let c = 0; c < k; c += 1) {
+      if (!counts[c]) continue;
+      for (let j = 0; j < p; j += 1) {
+        centers[c]![j] = (sums[c]![j] ?? 0) / (counts[c] ?? 1);
+      }
+    }
   }
   const predict = (Xs: Matrix): Vector =>
     vector(
@@ -803,6 +864,7 @@ const SKLEARN_NAME: Record<ModelName, string> = {
   kmeans: "KMeans",
   dbscan: "DBSCAN",
   pca_knn: "PCA+KNeighborsClassifier",
+  ovr_logistic: "OneVsRestClassifier(LogisticRegression)",
 };
 
 export function modelSklearnName(name: ModelName): string {
@@ -859,6 +921,8 @@ export function fitModel(
       return fitDbscan(X, y, params);
     case "pca_knn":
       return fitPcaKnn(X, y, params);
+    case "ovr_logistic":
+      return fitOvrLogistic(X, y, params);
     default:
       throw new Error(`Unknown model '${name as string}'`);
   }
@@ -891,6 +955,8 @@ export function defaultParams(name: ModelName): ModelParams {
       return { eps: 0.8, min_samples: 4 };
     case "pca_knn":
       return { n_components: 1, n_neighbors: 5 };
+    case "ovr_logistic":
+      return { lr: 0.5, epochs: 300 };
     default:
       return {};
   }

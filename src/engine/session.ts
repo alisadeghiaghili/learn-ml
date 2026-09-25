@@ -64,6 +64,8 @@ interface SessionState {
   coefReport: { name: string; coef: number; se: number; z: number }[] | null;
   importance: { feature: string; score: number }[] | null;
   silhouette: number | null;
+  calibCurve: { p: number; rate: number; n: number }[] | null;
+  predCi: { point: number; lo: number; hi: number }[] | null;
   nestedCvOuter: number[] | null;
   model: FittedModel | null;
   predictions: Vector | null;
@@ -123,6 +125,8 @@ export class Session {
       coefReport: this.coefReport ? this.coefReport.map((r) => ({ ...r })) : null,
       importance: this.importance ? this.importance.map((r) => ({ ...r })) : null,
       silhouette: this.silhouette,
+      calibCurve: this.calibCurve ? this.calibCurve.map((r) => ({ ...r })) : null,
+      predCi: this.predCi ? this.predCi.map((r) => ({ ...r })) : null,
       nestedCvOuter: this.nestedCvOuter ? [...this.nestedCvOuter] : null,
       model: this.model?.name ?? null,
       modelParams: this.model?.params ?? {},
@@ -172,6 +176,8 @@ export class Session {
   private coefReport: { name: string; coef: number; se: number; z: number }[] | null = null;
   private importance: { feature: string; score: number }[] | null = null;
   private silhouette: number | null = null;
+  private calibCurve: { p: number; rate: number; n: number }[] | null = null;
+  private predCi: { point: number; lo: number; hi: number }[] | null = null;
   private nestedCvOuter: number[] | null = null;
 
   /** Build the design matrix actually used for fit (post transforms). */
@@ -213,6 +219,8 @@ export class Session {
       coefReport: this.coefReport,
       importance: this.importance,
       silhouette: this.silhouette,
+      calibCurve: this.calibCurve,
+      predCi: this.predCi,
       nestedCvOuter: this.nestedCvOuter,
       model: this.model,
       predictions: this.predictions,
@@ -247,6 +255,8 @@ export class Session {
     this.coefReport = state.coefReport;
     this.importance = state.importance;
     this.silhouette = state.silhouette;
+    this.calibCurve = state.calibCurve;
+    this.predCi = state.predCi;
     this.nestedCvOuter = state.nestedCvOuter;
     this.model = state.model;
     this.predictions = state.predictions;
@@ -1156,6 +1166,13 @@ export class Session {
     const X = this.designMatrix(this.split?.XTrain ?? this.dataset!.X);
     const lab = this.model.predict(X);
     const n = X.nRows;
+    const dist = (i: number, j: number) => {
+      let d = 0;
+      const ri = X.data[i] ?? [];
+      const rj = X.data[j] ?? [];
+      for (let k = 0; k < X.nCols; k += 1) d += ((ri[k] ?? 0) - (rj[k] ?? 0)) ** 2;
+      return Math.sqrt(d);
+    };
     let total = 0;
     let used = 0;
     for (let i = 0; i < n; i += 1) {
@@ -1163,31 +1180,27 @@ export class Session {
       if (li < 0) continue;
       let a = 0;
       let aCount = 0;
-      let b = Infinity;
-      const dist = (i: number, j: number) => {
-        let d = 0;
-        const ri = X.data[i] ?? [];
-        const rj = X.data[j] ?? [];
-        for (let k = 0; k < X.nCols; k += 1) d += ((ri[k] ?? 0) - (rj[k] ?? 0)) ** 2;
-        return Math.sqrt(d);
-      };
-      const bClusters = new Map<number, number>();
+      const clusterD = new Map<number, { sum: number; cnt: number }>();
       for (let j = 0; j < n; j += 1) {
         if (i === j) continue;
         const lj = lab.data[j] ?? -1;
+        const d = dist(i, j);
         if (lj === li) {
-          a += dist(i, j);
+          a += d;
           aCount += 1;
         } else if (lj >= 0) {
-          bClusters.set(lj, (bClusters.get(lj) ?? 0) + dist(i, j));
+          const rec = clusterD.get(lj) ?? { sum: 0, cnt: 0 };
+          rec.sum += d;
+          rec.cnt += 1;
+          clusterD.set(lj, rec);
         }
       }
       a = aCount ? a / aCount : 0;
-      for (const sumD of bClusters.values()) {
-        // approximate: mean distance to other clusters
-        b = Math.min(b, sumD / n);
+      let b = Infinity;
+      for (const rec of clusterD.values()) {
+        if (rec.cnt > 0) b = Math.min(b, rec.sum / rec.cnt);
       }
-      if (!Number.isFinite(b)) continue;
+      if (!Number.isFinite(b) || aCount === 0) continue;
       total += (b - a) / Math.max(a, b, 1e-9);
       used += 1;
     }
@@ -1291,6 +1304,94 @@ export class Session {
     };
   }
 
+  /** Reliability bins: predicted p vs empirical frequency. */
+  calib(): CommandResult {
+    this.pushHistory();
+    const ds = this.requireDataset();
+    if (!this.model || !this.split || ds.task !== "classification") {
+      throw new Error("Need a fitted classifier.");
+    }
+    const X = this.designMatrix(this.split.XTest);
+    const y = this.split.yTest;
+    const dec = this.model.decision(X);
+    const probs = dec.data.map((z) => (z > 0 && z <= 1 ? z : 1 / (1 + Math.exp(-z))));
+    const bins = Array.from({ length: 5 }, () => ({ sum: 0, cnt: 0, pos: 0 }));
+    for (let i = 0; i < probs.length; i += 1) {
+      const p = probs[i] ?? 0;
+      const b = Math.min(4, Math.floor(p * 5));
+      const bin = bins[b]!;
+      bin.sum += p;
+      bin.cnt += 1;
+      if ((y.data[i] ?? 0) >= 0.5) bin.pos += 1;
+    }
+    this.calibCurve = bins.map((b, i) => ({
+      p: b.cnt ? b.sum / b.cnt : (i + 0.5) / 5,
+      rate: b.cnt ? b.pos / b.cnt : 0,
+      n: b.cnt,
+    }));
+    this.addStep({
+      kind: "score",
+      label: "calibration_curve",
+      sklearn: "from sklearn.calibration import calibration_curve\ny_prob, y_rate = calibration_curve(y_test, p, n_bins=5)",
+      status: "ok",
+    });
+    this.commandCount += 1;
+    return {
+      lines: [
+        "calibration bins (mean p vs empirical rate):",
+        ...this.calibCurve.map(
+          (r) => `  p=${r.p.toFixed(2)}  rate=${r.rate.toFixed(2)}  n=${r.n}`,
+        ),
+        "Diagonal is perfect calibration. Large gaps need CalibratedClassifierCV or isotonic.",
+      ],
+      sklearn: "calibration_curve(y_test, p, n_bins=5)",
+      status: "ok",
+      snapshot: this.snapshot(),
+    };
+  }
+
+  /** Prediction intervals via residual sd (regression). */
+  predInterval(): CommandResult {
+    this.pushHistory();
+    const ds = this.requireDataset();
+    if (!this.model || !this.split || ds.task !== "regression") {
+      throw new Error("Need a fitted regressor.");
+    }
+    const X = this.designMatrix(this.split.XTrain);
+    const pred = this.model.predict(X);
+    const res = this.split.yTrain.data.map((y, i) => y - (pred.data[i] ?? 0));
+    const n = res.length || 1;
+    const mu = res.reduce((a, b) => a + b, 0) / n;
+    const sd = Math.sqrt(res.reduce((a, b) => a + (b - mu) ** 2, 0) / n);
+    const Xt = this.designMatrix(this.split.XTest);
+    const pt = this.model.predict(Xt);
+    this.predCi = pt.data.slice(0, 8).map((point) => ({
+      point,
+      lo: point - 1.96 * sd,
+      hi: point + 1.96 * sd,
+    }));
+    this.addStep({
+      kind: "infer",
+      label: "prediction_interval",
+      sklearn: "# ŷ ± 1.96 * σ_residual  (simplified)",
+      status: "ok",
+    });
+    this.commandCount += 1;
+    return {
+      lines: [
+        `residual sd=${sd.toFixed(3)}`,
+        "prediction intervals (first rows):",
+        ...this.predCi.map(
+          (r) => `  ŷ=${r.point.toFixed(2)}  [${r.lo.toFixed(2)}, ${r.hi.toFixed(2)}]`,
+        ),
+        "Intervals are for a future observation — wider than a CI for the mean.",
+      ],
+      sklearn: "# prediction interval from residual sd",
+      status: "ok",
+      snapshot: this.snapshot(),
+    };
+  }
+
   reset(): CommandResult {
     this.pushHistory();
     this.dataset = null;
@@ -1316,6 +1417,8 @@ export class Session {
     this.coefReport = null;
     this.importance = null;
     this.silhouette = null;
+    this.calibCurve = null;
+    this.predCi = null;
     this.nestedCvOuter = null;
     this.cvScores = null;
     this.searchBest = null;

@@ -188,7 +188,13 @@ export function mount(root: HTMLElement): void {
                                 ? "WORLD 12 · METRICS PACK"
                                 : world === "w13"
                                   ? "WORLD 13 · STRUCTURE & CONTRACTS"
-                                  : world.toUpperCase();
+                                  : world === "w14"
+                                    ? "WORLD 14 · MULTICLASS & PROBABILITY"
+                                    : world === "w15"
+                                      ? "WORLD 15 · STATISTICAL DEPTH"
+                                      : world === "w16"
+                                        ? "WORLD 16 · GEOMETRY OF FEATURES"
+                                        : world.toUpperCase();
       const head = document.createElement("div");
       head.className = "rail-world";
       head.textContent = label;

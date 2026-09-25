@@ -330,14 +330,15 @@ describe("world 3-7 smoke", () => {
     expect(s.snapshot().searchBest).toBeTruthy();
   });
 
-  it("kmeans recovers 3 blobs", () => {
+  it("kmeans finds structure on 3 blobs", () => {
     const s = new Session();
     s.load("clusters");
     s.split_(0.2, 42);
     s.fit("kmeans", { n_clusters: 3 });
-    s.score("test");
-    const m = s.snapshot().metrics as { accuracy: number };
-    expect(m.accuracy).toBeGreaterThan(0.7);
+    s.sil();
+    const sil = s.snapshot().silhouette ?? -1;
+    // Cluster ids are arbitrary vs class labels — silhouette is the honest check.
+    expect(sil).toBeGreaterThan(0.4);
   });
 
   it("world levels exist for 3-7 and have learning lists", () => {
@@ -407,5 +408,29 @@ describe("world 3-7 smoke", () => {
     k.fit("kmeans", { n_clusters: 3 });
     k.sil();
     expect(k.snapshot().silhouette).not.toBeNull();
+  });
+
+  it("ovr multiclass, calibration, prediction intervals", () => {
+    const o = new Session();
+    o.load("clusters");
+    o.split_(0.25, 42);
+    o.fit("ovr_logistic");
+    o.score("test");
+    expect(o.snapshot().metrics).toBeTruthy();
+
+    const c = new Session();
+    c.load("blobs");
+    c.split_(0.2, 42);
+    c.fit("logistic");
+    c.score("test");
+    c.calib();
+    expect(c.snapshot().calibCurve?.length).toBe(5);
+
+    const r = new Session();
+    r.load("noisy_line");
+    r.split_(0.2, 42);
+    r.fit("linear");
+    r.predInterval();
+    expect(r.snapshot().predCi?.length).toBeGreaterThan(0);
   });
 });

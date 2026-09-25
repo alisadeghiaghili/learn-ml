@@ -123,24 +123,31 @@ export function classificationMetrics(
   let correct = 0;
   const n = yTrue.data.length;
   let llSum = 0;
+  const labels = new Set<number>();
+  for (const v of yTrue.data) labels.add(Math.round(v));
+  const multiclass = labels.size > 2;
   for (let i = 0; i < n; i += 1) {
-    const t = (yTrue.data[i] ?? 0) >= 0.5 ? 1 : 0;
-    const p = (yPred.data[i] ?? 0) >= 0.5 ? 1 : 0;
+    const t = multiclass ? Math.round(yTrue.data[i] ?? 0) : (yTrue.data[i] ?? 0) >= 0.5 ? 1 : 0;
+    const p = multiclass ? Math.round(yPred.data[i] ?? 0) : (yPred.data[i] ?? 0) >= 0.5 ? 1 : 0;
     if (t === p) {
       correct += 1;
     }
-    if (t === 1 && p === 1) {
-      tp += 1;
-    } else if (t === 0 && p === 1) {
-      fp += 1;
-    } else if (t === 0 && p === 0) {
-      tn += 1;
+    if (!multiclass) {
+      if (t === 1 && p === 1) {
+        tp += 1;
+      } else if (t === 0 && p === 1) {
+        fp += 1;
+      } else if (t === 0 && p === 0) {
+        tn += 1;
+      } else {
+        fn += 1;
+      }
+      const prob = yProba?.data[i] ?? (p === 1 ? 0.9 : 0.1);
+      const clamped = Math.min(1 - 1e-6, Math.max(1e-6, prob));
+      llSum += t === 1 ? -Math.log(clamped) : -Math.log(1 - clamped);
     } else {
-      fn += 1;
+      llSum += t === p ? -Math.log(0.9) : -Math.log(0.1 / Math.max(1, labels.size - 1));
     }
-    const prob = yProba?.data[i] ?? (p === 1 ? 0.9 : 0.1);
-    const clamped = Math.min(1 - 1e-6, Math.max(1e-6, prob));
-    llSum += t === 1 ? -Math.log(clamped) : -Math.log(1 - clamped);
   }
   const precision = tp + fp === 0 ? 0 : tp / (tp + fp);
   const recall = tp + fn === 0 ? 0 : tp / (tp + fn);

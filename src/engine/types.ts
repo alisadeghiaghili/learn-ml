@@ -29,7 +29,8 @@ export type ModelName =
   | "boost"
   | "kmeans"
   | "dbscan"
-  | "pca_knn";
+  | "pca_knn"
+  | "ovr_logistic";
 
 export type ScalerName = "standard" | "minmax";
 
@@ -106,6 +107,8 @@ export type StepKind =
   | "pipeline"
   | "boost"
   | "infer"
+  | "calib"
+  | "predci"
   | "reset";
 
 export interface PipelineStep {
@@ -175,6 +178,8 @@ export interface SessionSnapshot {
   readonly coefReport: readonly { name: string; coef: number; se: number; z: number }[] | null;
   readonly importance: readonly { feature: string; score: number }[] | null;
   readonly silhouette: number | null;
+  readonly calibCurve: readonly { p: number; rate: number; n: number }[] | null;
+  readonly predCi: readonly { point: number; lo: number; hi: number }[] | null;
   readonly nestedCvOuter: readonly number[] | null;
   readonly pipelineSaved: boolean;
   readonly splitStrategy: "random" | "stratified" | "time" | null;
