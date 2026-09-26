@@ -98,8 +98,12 @@ export function mount(root: HTMLElement): void {
 
   const elChrome = document.createElement("header");
   elChrome.className = "chrome";
-  elChrome.innerHTML = `
-    <div class="brand">Learn<span>ML</span></div>
+    elChrome.innerHTML = `
+    <div class="brand">
+      <img class="brand-logo" src="logo.svg" alt="" width="28" height="28" />
+      <div>Learn<span>ML</span></div>
+      <div class="brand-sub">SKLEARN LAB</div>
+    </div>
     <nav class="chrome-nav">
       <button type="button" data-nav="levels" class="is-active">levels</button>
       <button type="button" data-nav="sandbox">sandbox</button>
@@ -702,11 +706,17 @@ export function mount(root: HTMLElement): void {
           const lv = currentLevel();
           return [...(lv?.hints ?? ["No hints in sandbox."])];
         },
+        onShow: (what) => {
+          if (what === "welcome" || what === "about") {
+            showWelcome();
+            return ["Opened LearnML about card."];
+          }
+          return showWhat(what);
+        },
         onRunLevel: (id) => {
           openLevel(id);
           return [`Opened level ${id}.`];
         },
-        onShow: (what) => showWhat(what),
       });
       pushLines("out", result.lines);
       if (result.sklearn) {
@@ -746,6 +756,65 @@ export function mount(root: HTMLElement): void {
   window.addEventListener("resize", schedulePaint);
   setSklearn(null);
 
+  function showWelcome(): void {
+    const nLevels = ALL_LEVELS.length;
+    const bodyHtml = `
+      <div class="welcome-head">
+        <img src="logo.svg" alt="" width="40" height="40" />
+        <h2>LearnML</h2>
+      </div>
+      ${renderMarkdown(
+        [
+          "Interactive **Machine Learning** tutorial — sandbox + guided levels.",
+          "",
+          "The stage shows **data space → pipeline → metrics**. That is the material flow a scikit-learn model manages.",
+          "",
+          "- Basics: `load`, `split`, `fit`, `score`",
+          "- Preprocess: `scale`, `encode`, `impute`, `poly`, `fe`",
+          "- Models: `linear`, `logistic`, `knn`, `ridge`/`lasso`, `tree`, `forest`, `boost`",
+          "- Selection: `cv`, `search`, `curve`, `bootstrap`, `nested`",
+          "- Probability & structure: `cm`, `roc`, `calib`, `infer`, `sil`, `importance`",
+          "",
+          `Meta: \`levels\`, \`goal\`, \`hint\`, \`pipeline\`, \`save\`, \`help\`.`,
+          "",
+          `**${nLevels} levels** included. Open Levels to begin, or stay in sandbox.`,
+          "",
+          "**What is LearnML?**",
+          "A browser lab bench for machine learning: you type real-shaped scikit-learn workflow commands and watch decision boundaries, leakage flags, and metrics move. No install required for the tutorial core.",
+          "",
+          "**Publisher**",
+          "Published and maintained by **Ali Sadeghi Aghili** — programmer, data engineer / scientist, ML engineer.",
+          "[linktr.ee/aliaghili](https://linktr.ee/aliaghili)",
+          "",
+          "[GitHub — source & issues](https://github.com/alisadeghiaghili/learn-ml)",
+          "",
+          "Buy Me a Coffee (supports the publisher):",
+          "",
+          `<div class="welcome-coffee">${COFFEE_BUTTON_HTML}</div>`,
+          "",
+          '<div class="welcome-foot">Toolbar: <strong>levels</strong> · <strong>sandbox</strong> · <strong>help</strong> · progress saved in this browser.</div>',
+        ].join("\n"),
+      )}
+    `;
+    showModal({
+      title: "LearnML",
+      bodyHtml,
+      variant: "welcome",
+      actions: [
+        {
+          label: "Sandbox",
+          className: "ghost",
+          onClick: () => openSandbox(),
+        },
+        {
+          label: "Open levels",
+          className: "primary",
+          onClick: () => openLevel(levelId),
+        },
+      ],
+    });
+  }
+
   // Resume line when progress exists.
   const summary = summarizeCurriculum(progress);
   terminal.push("out", "LearnML · scikit-learn mental model sandbox");
@@ -758,6 +827,11 @@ export function mount(root: HTMLElement): void {
   }
   void LIVE_URL;
   void REPO_URL;
+
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("NODEMO")) {
+    showWelcome();
+  }
 }
 
 function colRange(X: { data: number[][] }, col: number): string {

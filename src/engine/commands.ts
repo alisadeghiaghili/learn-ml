@@ -44,7 +44,7 @@ const HELP_LINES = [
   "  save                     joblib.dump(pipeline)",
   "  search <model> [k=v...]  GridSearchCV-style search on train CV",
   "  split ... strategy=stratified|time",
-  "  show data|pipeline|metrics|code",
+  "  show data|pipeline|metrics|code|about",
   "  goal | hint | levels | run <id> | reset | undo | clear | help",
   "",
   `datasets: ${DATASET_NAMES.join(", ")}`,
